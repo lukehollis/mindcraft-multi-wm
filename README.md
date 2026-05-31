@@ -5,7 +5,7 @@ https://github.com/user-attachments/assets/1a893b56-da7c-4ae2-8af9-9d4bd36efe4d
 
 # Mindcraft: Multi-agent World Model for Continuous Learning Agents
 
-<p align="center">
+<p align="left">
   <a href="https://github.com/lukehollis/mindcraft-multi-wm">
     <img alt="GitHub repository" src="https://img.shields.io/badge/Code-GitHub-181717?style=for-the-badge&logo=github&logoColor=white">
   </a>
