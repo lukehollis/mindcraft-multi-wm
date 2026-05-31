@@ -22,9 +22,9 @@ const BLOCK_COLORS: Record<string, string> = {
 const AGENT_COLORS = ['#00f5ff', '#00ffa3', '#f8ff6a', '#ff2bd6', '#8b5cff', '#ff7a18']
 const BRIDGE_HTTP_ENV = process.env.NEXT_PUBLIC_BRIDGE_HTTP
 const BRIDGE_WS_ENV = process.env.NEXT_PUBLIC_BRIDGE_WS
-const MAX_INLINE_VIEWERS = configInt(process.env.NEXT_PUBLIC_MAX_INLINE_VIEWERS, 12)
-const MAX_ACTIVE_WEBGL_VIEWERS = configInt(process.env.NEXT_PUBLIC_MAX_ACTIVE_WEBGL_VIEWERS, 6)
-const MAX_OVERVIEW_WEBGL_AGENTS = configInt(process.env.NEXT_PUBLIC_MAX_OVERVIEW_WEBGL_AGENTS, 12)
+const MAX_INLINE_VIEWERS = 12
+const MAX_ACTIVE_WEBGL_VIEWERS = 6
+const MAX_OVERVIEW_WEBGL_AGENTS = 12
 const CLIENT_COMMIT_INTERVAL_MS = configInt(process.env.NEXT_PUBLIC_CLIENT_COMMIT_INTERVAL_MS, 750, 100)
 const CLIENT_BLOCK_LIMIT = configInt(process.env.NEXT_PUBLIC_CLIENT_BLOCK_LIMIT, 64)
 const CLIENT_HIDDEN_BLOCK_LIMIT = configInt(process.env.NEXT_PUBLIC_CLIENT_HIDDEN_BLOCK_LIMIT, 8)
@@ -32,6 +32,8 @@ const CLIENT_ENTITY_LIMIT = configInt(process.env.NEXT_PUBLIC_CLIENT_ENTITY_LIMI
 const CLIENT_TRAIL_LIMIT = configInt(process.env.NEXT_PUBLIC_CLIENT_TRAIL_LIMIT, 72)
 const CLIENT_EDGE_LIMIT = configInt(process.env.NEXT_PUBLIC_CLIENT_EDGE_LIMIT, 160)
 const CLIENT_ACTIVITY_LIMIT = configInt(process.env.NEXT_PUBLIC_CLIENT_ACTIVITY_LIMIT, 80)
+const VIEWER_IFRAME_FPS = configNumber(process.env.NEXT_PUBLIC_VIEWER_FPS, 4, 0)
+const VIEWER_IFRAME_DPR = configNumber(process.env.NEXT_PUBLIC_VIEWER_DPR, 1, 0.1)
 
 type DashboardHistoryPoint = {
   nearestDistance: number
@@ -132,6 +134,7 @@ export function MindcraftDashboard() {
     ['status', connected ? 'live' : 'reconnecting'],
     ['viewer slots', `${inlineViewerSlots}/${renderedFeeds}`],
     ['webgl', `${activeWebglSlots}/${inlineViewerSlots}`],
+    ['render', `${VIEWER_IFRAME_DPR}x @ ${VIEWER_IFRAME_FPS}fps`],
     ['active tasks', activeTasks],
     ['agents', `${readyAgents}/${snapshot?.agents.length ?? 0}`],
     ['hidden', overflowAgents.length]
@@ -201,7 +204,12 @@ export function MindcraftDashboard() {
           ]}
         />
         <div className="overview-grid">
-          <WorldCamera viewer={overviewViewer} browserHost={browserHost} webglAvailable={overviewWebglAvailable} />
+          <WorldCamera
+            viewer={overviewViewer}
+            browserHost={browserHost}
+            webglAvailable={overviewWebglAvailable}
+            snapshot={snapshot}
+          />
           <div className="society-stage">
             <span className="stage-label">Society Map</span>
             <SocietyCanvas snapshot={snapshot} />
@@ -363,11 +371,13 @@ function AgentFeed({
 function WorldCamera({
   viewer,
   browserHost,
-  webglAvailable
+  webglAvailable,
+  snapshot
 }: {
   viewer: DashboardSnapshot['server']['overview_viewer'] | null | undefined
   browserHost: string
   webglAvailable: boolean
+  snapshot: DashboardSnapshot | null
 }) {
   const url = webglAvailable && viewer ? viewerHref(browserHost, viewer.port, '/') : null
   return (
@@ -376,23 +386,23 @@ function WorldCamera({
       {url ? (
         <iframe title="Minecraft overview world camera" src={url} />
       ) : (
-        <OverviewFallback label={webglAvailable ? 'waiting for overview viewer' : 'WebGL viewer unavailable'} />
+        <OverviewFallback
+          snapshot={snapshot}
+          label={snapshot ? 'canvas overview' : 'waiting for overview data'}
+        />
       )}
     </div>
   )
 }
 
-function OverviewFallback({ label }: { label: string }) {
+function OverviewFallback({ label, snapshot }: { label: string; snapshot: DashboardSnapshot | null }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = fitCanvas(canvas)
-    ctx.fillStyle = '#000407'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
-    drawGrid(ctx, canvas.width, canvas.height, 'rgba(0, 229, 255, 0.16)')
-    centerText(ctx, canvas.width, canvas.height, label, '#00e5ff')
-  }, [label])
+    drawWorldOverview(ctx, canvas, snapshot, label)
+  }, [label, snapshot])
   return <canvas ref={canvasRef} />
 }
 
@@ -550,6 +560,74 @@ function drawFallbackFeed(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasEleme
   ctx.moveTo(cx, horizon - 18)
   ctx.lineTo(cx, horizon + 18)
   ctx.stroke()
+}
+
+function drawWorldOverview(
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  snapshot: DashboardSnapshot | null,
+  label: string
+) {
+  const { width, height } = canvas
+  ctx.clearRect(0, 0, width, height)
+  ctx.fillStyle = '#000407'
+  ctx.fillRect(0, 0, width, height)
+  drawGrid(ctx, width, height, 'rgba(0, 229, 255, 0.16)')
+  if (!snapshot) {
+    centerText(ctx, width, height, label, '#00e5ff')
+    return
+  }
+
+  const bounds = worldBounds(snapshot)
+  const toCanvas = (point: Vec3) => mapPoint(point, bounds, width, height)
+  const blocks = snapshot.agents.flatMap((agent) => agent.blocks ?? [])
+  for (const block of blocks.slice(0, 700)) {
+    const p = toCanvas(block)
+    const size = block.kind === 'other' ? 2 : 3.5
+    ctx.fillStyle = BLOCK_COLORS[block.kind] || BLOCK_COLORS.other
+    ctx.globalAlpha = block.kind === 'other' ? 0.12 : 0.46
+    ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size)
+  }
+  ctx.globalAlpha = 1
+
+  for (const [index, agent] of snapshot.agents.entries()) {
+    const color = agentColor(index)
+    const trail = agent.trail ?? []
+    if (trail.length > 1) {
+      ctx.strokeStyle = color
+      ctx.globalAlpha = 0.42
+      ctx.lineWidth = 1.5 * dpr()
+      ctx.beginPath()
+      for (const [i, point] of trail.entries()) {
+        const p = toCanvas(point)
+        if (i === 0) ctx.moveTo(p.x, p.y)
+        else ctx.lineTo(p.x, p.y)
+      }
+      ctx.stroke()
+      ctx.globalAlpha = 1
+    }
+    if (!agent.position) continue
+    const p = toCanvas(agent.position)
+    ctx.fillStyle = color
+    ctx.strokeStyle = '#000407'
+    ctx.lineWidth = 2 * dpr()
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, 6 * dpr(), 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.5 * dpr()
+    ctx.beginPath()
+    ctx.moveTo(p.x, p.y)
+    ctx.lineTo(p.x - Math.sin(agent.yaw ?? 0) * 15 * dpr(), p.y - Math.cos(agent.yaw ?? 0) * 15 * dpr())
+    ctx.stroke()
+  }
+
+  ctx.fillStyle = 'rgba(0, 4, 7, 0.7)'
+  ctx.fillRect(10 * dpr(), canvas.height - 30 * dpr(), 150 * dpr(), 20 * dpr())
+  ctx.fillStyle = '#00e5ff'
+  ctx.font = `${10 * dpr()}px system-ui, sans-serif`
+  ctx.fillText(label, 18 * dpr(), canvas.height - 16 * dpr())
 }
 
 function drawSociety(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, snapshot: DashboardSnapshot | null) {
@@ -811,6 +889,11 @@ function configInt(raw: string | undefined, fallback: number, min = 0) {
   return Number.isFinite(value) ? Math.max(min, value) : fallback
 }
 
+function configNumber(raw: string | undefined, fallback: number, min = 0) {
+  const value = Number.parseFloat(raw ?? '')
+  return Number.isFinite(value) ? Math.max(min, value) : fallback
+}
+
 function fmt(value: number | null | undefined, digits = 1) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '-'
   return Number(value).toFixed(digits)
@@ -843,18 +926,13 @@ function hasWebglSupport() {
 function resolveBridgeEndpoints() {
   const host = window.location.hostname || 'localhost'
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const localBridge = isLocalDashboardHost(host)
   const bridgeHost = formatHostForUrl(host)
-  const bridgeHttp = localBridge ? `http://${bridgeHost}:8780` : window.location.origin
-  const bridgeWsHost = localBridge ? `${bridgeHost}:8780` : window.location.host
+  const bridgeHttp = window.location.origin
+  const bridgeWsHost = `${bridgeHost}:8780`
   return {
     http: BRIDGE_HTTP_ENV || bridgeHttp,
     ws: BRIDGE_WS_ENV || `${protocol}://${bridgeWsHost}/stream`
   }
-}
-
-function isLocalDashboardHost(host: string) {
-  return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1'
 }
 
 function formatHostForUrl(host: string) {
@@ -870,6 +948,11 @@ function readWebglLimit() {
 }
 
 function viewerHref(host: string, port: number, path = '/') {
-  if (!isLocalDashboardHost(window.location.hostname || 'localhost')) return null
-  return `http://${formatHostForUrl(host || 'localhost')}:${port}${path || '/'}`
+  const normalizedPath = path || '/'
+  const params = new URLSearchParams()
+  if (VIEWER_IFRAME_FPS > 0) params.set('fps', String(VIEWER_IFRAME_FPS))
+  if (VIEWER_IFRAME_DPR > 0) params.set('dpr', String(VIEWER_IFRAME_DPR))
+  const query = params.toString()
+  const separator = normalizedPath.includes('?') ? '&' : '?'
+  return `http://${formatHostForUrl(host || 'localhost')}:${port}${normalizedPath}${query ? `${separator}${query}` : ''}`
 }
