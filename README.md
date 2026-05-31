@@ -40,9 +40,10 @@ In the future this type of continual learning will be used in robotic systems su
 
 In the realworld, it will be important for robots like the Unitree Go2 Pro to have continous learning from their environment with a method like our small Mindcraft model. We used Isaac Sim and the Go2 Pro robot to implement our continuous learning model in a simulated environment.
 
-https://github.com/user-attachments/assets/6df3118b-2443-4e7f-af82-74242437f3e5
 
-Note: this is a placeholder example video while ours is rendering for the final. https://www.youtube.com/watch?v=8AnsOZK948Y 
+https://github.com/user-attachments/assets/4575ed03-c078-4bb6-91f3-bd0b2697e832
+
+This is our real continual learning world model running on the Go2 in Isaac Lab.
 
 Many robotic systems will need to coordinate to achieve tasks in the same way our Minecraft characters coordinate to trade, mine, craft, etc. That's why our multi-agent orchestration agent harness is important for real-world task completion.
 
