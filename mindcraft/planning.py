@@ -28,6 +28,8 @@ class _Edge:
     reward: float
     value_hint: float
     uncertainty: float
+    unlock_gain: float
+    affordance: float
     child: "_Node"
     visits: int = 0
     value_sum: float = 0.0
@@ -85,6 +87,8 @@ class ModelMCTSPlanner:
                 "reward": edge.raw_reward,
                 "penalized_reward": edge.reward,
                 "uncertainty": edge.uncertainty,
+                "unlock_gain": edge.unlock_gain,
+                "affordance": edge.affordance,
             }
             for name, edge in sorted(root.children.items())
         }
@@ -131,13 +135,18 @@ class ModelMCTSPlanner:
             reward_uncertainty = max(0.0, float(pred["reward_uncertainty"]))
             value_uncertainty = max(0.0, float(pred["value_uncertainty"]))
             uncertainty = reward_uncertainty + self.gamma * value_uncertainty
+            unlock_gain = max(0.0, float(pred.get("unlock_gain", 0.0)))
+            affordance = max(0.0, min(1.0, float(pred.get("skill_affordance", 1.0))))
+            raw_reward = float(pred["reward"]) + 0.75 * unlock_gain
             node.children[skill] = _Edge(
                 skill=skill,
                 prior=prior,
-                raw_reward=float(pred["reward"]),
-                reward=float(pred["reward"]) - self.uncertainty_weight * reward_uncertainty,
+                raw_reward=raw_reward,
+                reward=raw_reward - self.uncertainty_weight * reward_uncertainty - 0.25 * (1.0 - affordance),
                 value_hint=float(pred["value"]) - self.uncertainty_weight * value_uncertainty,
                 uncertainty=uncertainty,
+                unlock_gain=unlock_gain,
+                affordance=affordance,
                 child=_Node(np.asarray(pred["next_obs"], dtype=np.float32)),
             )
         norm = sum(edge.prior for edge in node.children.values())
