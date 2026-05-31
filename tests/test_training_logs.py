@@ -13,6 +13,8 @@ def make_metrics(train_step: int = 1) -> WorldModelMetrics:
         reward_loss=0.3,
         value_loss=0.4,
         policy_loss=0.5,
+        unlock_loss=0.45,
+        affordance_loss=0.55,
         done_loss=0.6,
         code_usage=0.7,
     )

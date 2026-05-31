@@ -5,7 +5,14 @@ https://github.com/user-attachments/assets/1a893b56-da7c-4ae2-8af9-9d4bd36efe4d
 
 # Mindcraft: Multi-agent World Model for Continuous Learning Agents
 
-[Code](https://github.com/lukehollis/mindcraft-multi-wm) [Live Demo](http://mindcraft.fyi/)
+<p align="center">
+  <a href="https://github.com/lukehollis/mindcraft-multi-wm">
+    <img alt="GitHub repository" src="https://img.shields.io/badge/Code-GitHub-181717?style=for-the-badge&logo=github&logoColor=white">
+  </a>
+  <a href="http://mindcraft.fyi/">
+    <img alt="Live demo" src="https://img.shields.io/badge/Live%20Demo-mindcraft.fyi-22c55e?style=for-the-badge&logo=vercel&logoColor=white">
+  </a>
+</p>
 
 Continuous learning agents inside Minecraft based on [Andrej Karpathy’s Animals v. Ghosts](https://karpathy.bearblog.dev/animals-vs-ghosts/).
 
@@ -62,6 +69,7 @@ Useful flags:
 ```sh
 mindcraft train-replay --storage-dir runs/default --device cuda --tensorboard
 mindcraft train-replay --storage-dir runs/default --follow --batches 0
+mindcraft train-replay --storage-dir runs/default --no-hindsight-relabeling --no-frontier-sampling
 mindcraft device-info
 ```
 

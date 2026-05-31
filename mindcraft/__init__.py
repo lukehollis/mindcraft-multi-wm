@@ -4,7 +4,14 @@ from mindcraft.planning import MCTSPlan, ModelMCTSPlanner
 from mindcraft.replay import ReplayBuffer
 from mindcraft.schemas import Observation, SkillResult, Transition
 from mindcraft.skill_library import SkillLibrary
-from mindcraft.world_model import WorldModelMetrics, WorldModelTrainer, encode_action, encode_observation
+from mindcraft.world_model import (
+    WorldModelMetrics,
+    WorldModelTrainer,
+    encode_action,
+    encode_affordances,
+    encode_observation,
+    encode_unlocks,
+)
 
 __all__ = [
     "MCTSPlan",
@@ -17,5 +24,7 @@ __all__ = [
     "WorldModelMetrics",
     "WorldModelTrainer",
     "encode_action",
+    "encode_affordances",
     "encode_observation",
+    "encode_unlocks",
 ]

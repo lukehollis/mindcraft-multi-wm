@@ -6,7 +6,7 @@ import torch
 
 from mindcraft.schemas import Observation, SkillResult, Transition
 from mindcraft.skill_library import SkillLibrary
-from mindcraft.world_model import WorldModelTrainer, encode_action, encode_observation
+from mindcraft.world_model import WorldModelTrainer, encode_action, encode_affordances, encode_observation, encode_unlocks
 from mindcraft.planning import ModelMCTSPlanner
 
 
@@ -42,6 +42,9 @@ def test_feature_encoders_have_expected_shapes() -> None:
 
     assert encode_observation(obs).ndim == 1
     assert encode_action("forage_wood").sum() == 1.0
+    assert encode_action("mine_coal").sum() == 1.0
+    assert encode_unlocks(obs).ndim == 1
+    assert encode_affordances(obs).ndim == 1
 
 
 def test_world_model_trains_one_batch(tmp_path: Path) -> None:
@@ -65,7 +68,7 @@ def test_world_model_predicts_skill_for_planning(tmp_path: Path) -> None:
 
     prediction = trainer.predict_skill(seq[-1].next_observation, "forage_wood")
 
-    assert set(prediction) == {
+    assert {
         "next_obs",
         "reward",
         "reward_uncertainty",
@@ -74,9 +77,16 @@ def test_world_model_predicts_skill_for_planning(tmp_path: Path) -> None:
         "model_uncertainty",
         "done_logit",
         "prior",
-    }
+        "unlock",
+        "affordance",
+        "skill_affordance",
+        "unlock_delta",
+        "unlock_gain",
+    }.issubset(prediction)
     assert prediction["next_obs"].shape == encode_observation(seq[-1].next_observation).shape
     assert prediction["model_uncertainty"] >= 0.0
+    assert "logs" in prediction["unlock"]
+    assert "mine_coal" in prediction["affordance"]
 
 
 def test_world_model_checkpoint_resumes_training_step(tmp_path: Path) -> None:
@@ -90,7 +100,9 @@ def test_world_model_checkpoint_resumes_training_step(tmp_path: Path) -> None:
     payload = torch.load(tmp_path / "world_model.pt", map_location="cpu")
     metadata = json.loads((tmp_path / "world_model_checkpoint.json").read_text(encoding="utf-8"))
     assert payload["train_step"] == 1
+    assert payload["checkpoint_version"] == 3
     assert metadata["train_step"] == 1
+    assert metadata["checkpoint_version"] == 3
 
     resumed = WorldModelTrainer(tmp_path, d_model=32, layers=1, heads=4, lr=1e-3, device="cpu")
     assert resumed.train_step == 1
@@ -141,6 +153,8 @@ def test_world_model_reports_validation_metrics(tmp_path: Path) -> None:
     assert metrics is not None
     assert metrics.val_loss is not None
     assert metrics.val_reward_loss is not None
+    assert metrics.val_unlock_loss is not None
+    assert metrics.val_affordance_loss is not None
 
 
 def test_mcts_planner_returns_candidate_skill(tmp_path: Path) -> None:

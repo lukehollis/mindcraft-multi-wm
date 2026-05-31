@@ -21,6 +21,8 @@ def main(argv: list[str] | None = None) -> None:
     train.add_argument("--batch-size", type=int, default=16)
     train.add_argument("--sequence-length", type=int, default=8)
     train.add_argument("--replay-capacity", type=int, default=50_000)
+    train.add_argument("--frontier-sampling", action=argparse.BooleanOptionalAction, default=True)
+    train.add_argument("--hindsight-relabeling", action=argparse.BooleanOptionalAction, default=True)
     train.add_argument("--seed", type=int, default=7)
     train.add_argument("--device", default=None, help="Torch device, for example cpu or cuda")
     train.add_argument("--model-dim", type=int, default=128)
@@ -57,7 +59,12 @@ def main(argv: list[str] | None = None) -> None:
 def _train_replay(args: argparse.Namespace) -> None:
     storage_dir = Path(args.storage_dir)
     replay_path = Path(args.replay_file) if args.replay_file else storage_dir / "experience.jsonl"
-    replay = ReplayBuffer(replay_path, capacity=args.replay_capacity)
+    replay = ReplayBuffer(
+        replay_path,
+        capacity=args.replay_capacity,
+        hindsight_relabeling=args.hindsight_relabeling,
+        frontier_sampling=args.frontier_sampling,
+    )
     trainer = WorldModelTrainer(
         storage_dir,
         d_model=args.model_dim,

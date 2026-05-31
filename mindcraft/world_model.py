@@ -13,6 +13,7 @@ import torch.nn.functional as F
 
 from mindcraft.skills import SKILLS, WOOD_LOG_ITEMS, WOOD_PLANK_ITEMS
 from mindcraft.schemas import Observation, Transition
+from mindcraft.progression import PROGRESSION_ITEMS, skill_affordance_mask, snapshot as progression_snapshot
 
 
 INVENTORY_KEYS = (
@@ -37,6 +38,7 @@ BLOCK_KEYS = (
     "spruce_log",
     "stone",
     "coal_ore",
+    "deepslate_coal_ore",
     "iron_ore",
     "deepslate_iron_ore",
     "diamond_ore",
@@ -46,11 +48,13 @@ BLOCK_KEYS = (
 )
 
 SKILL_NAMES = tuple(SKILLS)
+UNLOCK_KEYS = tuple(PROGRESSION_ITEMS)
 ACTION_ALIASES = {
     "scout_area": "explore_area",
 }
 OBS_DIM = 5 + len(INVENTORY_KEYS) + len(BLOCK_KEYS)
 ACTION_DIM = len(SKILL_NAMES)
+UNLOCK_DIM = len(UNLOCK_KEYS)
 
 
 class RMSNorm(nn.Module):
@@ -255,6 +259,8 @@ class ActionConditionedWorldModel(nn.Module):
         self.done = LoRALinear(d_model, 1, rank=lora_rank)
         self.value = ScalarEnsembleHead(d_model, members=ensemble_size, lora_rank=lora_rank)
         self.policy = LoRALinear(d_model, action_dim, rank=lora_rank)
+        self.unlock = LoRALinear(d_model, UNLOCK_DIM, rank=lora_rank)
+        self.affordance = LoRALinear(d_model, action_dim, rank=lora_rank)
         self._reset_target_encoder()
         if freeze_base_for_lora and lora_rank > 0:
             self.freeze_base_for_lora()
@@ -321,6 +327,8 @@ class ActionConditionedWorldModel(nn.Module):
             "value_uncertainty": value_uncertainty,
             "value_members": value_members,
             "policy": self.policy(decoded),
+            "unlock": self.unlock(decoded),
+            "affordance": self.affordance(decoded),
             "pred_latent": self.jepa_predictor(decoded),
             "codes": self.fsq.indices(z),
         }
@@ -338,6 +346,8 @@ class WorldModelMetrics:
     reward_loss: float
     value_loss: float
     policy_loss: float
+    unlock_loss: float
+    affordance_loss: float
     done_loss: float
     code_usage: float
     val_loss: float | None = None
@@ -345,6 +355,8 @@ class WorldModelMetrics:
     val_reward_loss: float | None = None
     val_value_loss: float | None = None
     val_policy_loss: float | None = None
+    val_unlock_loss: float | None = None
+    val_affordance_loss: float | None = None
     val_done_loss: float | None = None
 
 
@@ -380,6 +392,7 @@ class WorldModelTrainer:
             "ensemble_size": ensemble_size,
             "lora_rank": lora_rank,
             "freeze_base_for_lora": freeze_base_for_lora,
+            "unlock_dim": UNLOCK_DIM,
         }
         self.model = ActionConditionedWorldModel(
             OBS_DIM,
@@ -416,9 +429,9 @@ class WorldModelTrainer:
         if not sequences:
             return None
         self.model.train()
-        obs, action, next_obs, reward, done = batch_to_tensors(sequences, self.device)
+        obs, action, next_obs, reward, done, unlock, affordance = batch_to_tensors(sequences, self.device)
         pred = self.model(obs, action, next_obs=next_obs)
-        losses = self._loss_components(pred, action, next_obs, reward, done)
+        losses = self._loss_components(pred, action, next_obs, reward, done, unlock, affordance)
         loss = losses["loss"]
         self.optim.zero_grad(set_to_none=True)
         loss.backward()
@@ -437,6 +450,8 @@ class WorldModelTrainer:
             reward_loss=float(losses["reward_loss"].detach().cpu()),
             value_loss=float(losses["value_loss"].detach().cpu()),
             policy_loss=float(losses["policy_loss"].detach().cpu()),
+            unlock_loss=float(losses["unlock_loss"].detach().cpu()),
+            affordance_loss=float(losses["affordance_loss"].detach().cpu()),
             done_loss=float(losses["done_loss"].detach().cpu()),
             code_usage=float(code_usage),
             **validation,
@@ -447,15 +462,17 @@ class WorldModelTrainer:
         if not sequences:
             return {}
         self.model.eval()
-        obs, action, next_obs, reward, done = batch_to_tensors(sequences, self.device)
+        obs, action, next_obs, reward, done, unlock, affordance = batch_to_tensors(sequences, self.device)
         pred = self.model(obs, action, next_obs=next_obs)
-        losses = self._loss_components(pred, action, next_obs, reward, done)
+        losses = self._loss_components(pred, action, next_obs, reward, done, unlock, affordance)
         return {
             "val_loss": float(losses["loss"].detach().cpu()),
             "val_obs_loss": float(losses["obs_loss"].detach().cpu()),
             "val_reward_loss": float(losses["reward_loss"].detach().cpu()),
             "val_value_loss": float(losses["value_loss"].detach().cpu()),
             "val_policy_loss": float(losses["policy_loss"].detach().cpu()),
+            "val_unlock_loss": float(losses["unlock_loss"].detach().cpu()),
+            "val_affordance_loss": float(losses["affordance_loss"].detach().cpu()),
             "val_done_loss": float(losses["done_loss"].detach().cpu()),
         }
 
@@ -466,6 +483,8 @@ class WorldModelTrainer:
         next_obs: torch.Tensor,
         reward: torch.Tensor,
         done: torch.Tensor,
+        unlock: torch.Tensor,
+        affordance: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         returns = discounted_returns(reward, done, self.gamma)
         policy_target = action.argmax(dim=-1)
@@ -476,8 +495,19 @@ class WorldModelTrainer:
         value_target = returns.unsqueeze(-1).expand_as(pred["value_members"])
         value_loss = F.smooth_l1_loss(pred["value_members"], value_target)
         policy_loss = F.cross_entropy(pred["policy"].reshape(-1, ACTION_DIM), policy_target.reshape(-1))
+        unlock_loss = F.binary_cross_entropy_with_logits(pred["unlock"], unlock)
+        affordance_loss = F.binary_cross_entropy_with_logits(pred["affordance"], affordance)
         done_loss = F.binary_cross_entropy_with_logits(pred["done"], done)
-        loss = obs_loss + jepa_loss + reward_loss + 0.5 * value_loss + 0.2 * policy_loss + 0.2 * done_loss
+        loss = (
+            obs_loss
+            + jepa_loss
+            + reward_loss
+            + 0.5 * value_loss
+            + 0.2 * policy_loss
+            + 0.35 * unlock_loss
+            + 0.15 * affordance_loss
+            + 0.2 * done_loss
+        )
         return {
             "loss": loss,
             "obs_loss": obs_loss,
@@ -485,28 +515,35 @@ class WorldModelTrainer:
             "reward_loss": reward_loss,
             "value_loss": value_loss,
             "policy_loss": policy_loss,
+            "unlock_loss": unlock_loss,
+            "affordance_loss": affordance_loss,
             "done_loss": done_loss,
         }
 
     @torch.no_grad()
     def prediction_error(self, transition: Transition) -> float:
         self.model.eval()
-        obs, action, next_obs, reward, _done = batch_to_tensors([[transition]], self.device)
+        obs, action, next_obs, reward, _done, unlock, affordance = batch_to_tensors([[transition]], self.device)
         pred = self.model(obs, action)
         obs_err = F.smooth_l1_loss(pred["next_obs"], next_obs).item()
         reward_err = F.mse_loss(pred["reward"], reward).item()
-        return float(obs_err + reward_err)
+        unlock_err = F.binary_cross_entropy_with_logits(pred["unlock"], unlock).item()
+        affordance_err = F.binary_cross_entropy_with_logits(pred["affordance"], affordance).item()
+        return float(obs_err + reward_err + 0.25 * unlock_err + 0.1 * affordance_err)
 
     @torch.no_grad()
     def predict_skill(self, observation: Observation | np.ndarray, skill: str) -> dict[str, Any]:
         self.model.eval()
+        observed_unlocks = encode_unlocks(observation) if isinstance(observation, Observation) else None
         obs_array = encode_observation(observation) if isinstance(observation, Observation) else observation
         obs = torch.tensor(obs_array, dtype=torch.float32, device=self.device).view(1, 1, -1)
         action = torch.tensor(encode_action(skill), dtype=torch.float32, device=self.device).view(1, 1, -1)
         pred = self.model(obs, action)
         policy = torch.softmax(pred["policy"][0, -1], dim=-1)
+        unlock = torch.sigmoid(pred["unlock"][0, -1]).detach().cpu().numpy()
+        affordance = torch.sigmoid(pred["affordance"][0, -1]).detach().cpu().numpy()
         index = SKILL_NAMES.index(skill) if skill in SKILL_NAMES else 0
-        return {
+        payload = {
             "next_obs": pred["next_obs"][0, -1].detach().cpu().numpy(),
             "reward": float(pred["reward"][0, -1].detach().cpu()),
             "reward_uncertainty": float(pred["reward_uncertainty"][0, -1].detach().cpu()),
@@ -517,12 +554,20 @@ class WorldModelTrainer:
             ),
             "done_logit": float(pred["done"][0, -1].detach().cpu()),
             "prior": float(policy[index].detach().cpu()),
+            "unlock": {name: float(unlock[i]) for i, name in enumerate(UNLOCK_KEYS)},
+            "affordance": {name: float(affordance[i]) for i, name in enumerate(SKILL_NAMES)},
+            "skill_affordance": float(affordance[index]),
         }
+        if observed_unlocks is not None:
+            delta = np.maximum(0.0, unlock - observed_unlocks)
+            payload["unlock_delta"] = {name: float(delta[i]) for i, name in enumerate(UNLOCK_KEYS)}
+            payload["unlock_gain"] = float(delta.sum())
+        return payload
 
     def save(self) -> None:
         torch.save(
             {
-                "checkpoint_version": 2,
+                "checkpoint_version": 3,
                 "model": self.model.state_dict(),
                 "optim": self.optim.state_dict(),
                 "last_loss": self.last_loss,
@@ -546,18 +591,46 @@ class WorldModelTrainer:
         path = Path(path)
         payload = torch.load(path, map_location=self.device)
         saved_skill_names = tuple(payload.get("skill_names") or ())
-        if saved_skill_names != SKILL_NAMES:
-            raise RuntimeError("checkpoint skill vocabulary does not match current model")
         saved_model_config = payload.get("model_config")
-        if saved_model_config is not None and dict(saved_model_config) != self.model_config:
-            raise RuntimeError("checkpoint model config does not match current model")
-        self.model.load_state_dict(payload["model"])
-        if load_optimizer and "optim" in payload:
+        strict_compatible = saved_skill_names == SKILL_NAMES and saved_model_config is not None and dict(saved_model_config) == self.model_config
+        if strict_compatible:
+            self.model.load_state_dict(payload["model"])
+        else:
+            loaded, partial = self._load_compatible_model_state(payload.get("model") or {})
+            if loaded == 0:
+                if saved_skill_names != SKILL_NAMES:
+                    raise RuntimeError("checkpoint skill vocabulary does not match current model")
+                raise RuntimeError("checkpoint model config does not match current model")
+            print(
+                f"partially loaded {loaded} world-model tensors from {path}; "
+                f"adapted {partial} tensors for changed skills/heads"
+            )
+        if load_optimizer and strict_compatible and "optim" in payload:
             self.optim.load_state_dict(payload["optim"])
         self.last_loss = float(payload.get("last_loss", 1.0))
         self.train_step = int(payload.get("train_step", 0))
         self.gamma = float(payload.get("gamma", self.gamma))
         self._remember_loaded_checkpoint(path)
+
+    def _load_compatible_model_state(self, saved_state: dict[str, torch.Tensor]) -> tuple[int, int]:
+        current = self.model.state_dict()
+        loaded = 0
+        partial = 0
+        for name, saved in saved_state.items():
+            if name not in current or not isinstance(saved, torch.Tensor):
+                continue
+            target = current[name]
+            if target.shape == saved.shape:
+                target.copy_(saved.to(device=target.device, dtype=target.dtype))
+                loaded += 1
+                continue
+            if target.ndim == saved.ndim:
+                slices = tuple(slice(0, min(t_dim, s_dim)) for t_dim, s_dim in zip(target.shape, saved.shape))
+                target[slices].copy_(saved.to(device=target.device, dtype=target.dtype)[slices])
+                loaded += 1
+                partial += 1
+        self.model.load_state_dict(current, strict=True)
+        return loaded, partial
 
     def reload_if_changed(self, path: Path | None = None) -> bool:
         path = Path(path or self.checkpoint_path)
@@ -577,7 +650,7 @@ class WorldModelTrainer:
 
     def checkpoint_metadata(self) -> dict[str, Any]:
         return {
-            "checkpoint_version": 2,
+            "checkpoint_version": 3,
             "checkpoint_path": str(self.checkpoint_path),
             "last_loss": self.last_loss,
             "train_step": self.train_step,
@@ -610,27 +683,46 @@ def encode_action(skill: str) -> np.ndarray:
     return arr
 
 
+def encode_unlocks(obs: Observation) -> np.ndarray:
+    current = progression_snapshot(obs)
+    return np.asarray([1.0 if current.get(name, 0) > 0 else 0.0 for name in UNLOCK_KEYS], dtype=np.float32)
+
+
+def encode_affordances(obs: Observation, target_skill: str | None = None) -> np.ndarray:
+    mask = skill_affordance_mask(obs, include_recovery=True)
+    values = [1.0 if mask.get(name, False) else 0.0 for name in SKILL_NAMES]
+    if target_skill in SKILL_NAMES:
+        values[SKILL_NAMES.index(target_skill)] = 1.0
+    return np.asarray(values, dtype=np.float32)
+
+
 def batch_to_tensors(
     sequences: list[list[Transition]],
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     obs_rows: list[list[np.ndarray]] = []
     action_rows: list[list[np.ndarray]] = []
     next_rows: list[list[np.ndarray]] = []
     reward_rows: list[list[float]] = []
     done_rows: list[list[float]] = []
+    unlock_rows: list[list[np.ndarray]] = []
+    affordance_rows: list[list[np.ndarray]] = []
     for seq in sequences:
         obs_rows.append([encode_observation(t.observation) for t in seq])
         action_rows.append([encode_action(t.skill) for t in seq])
         next_rows.append([encode_observation(t.next_observation) for t in seq])
         reward_rows.append([float(t.reward) for t in seq])
         done_rows.append([float(t.done) for t in seq])
+        unlock_rows.append([encode_unlocks(t.next_observation) for t in seq])
+        affordance_rows.append([encode_affordances(t.observation, target_skill=t.skill) for t in seq])
     return (
         torch.tensor(np.asarray(obs_rows), dtype=torch.float32, device=device),
         torch.tensor(np.asarray(action_rows), dtype=torch.float32, device=device),
         torch.tensor(np.asarray(next_rows), dtype=torch.float32, device=device),
         torch.tensor(np.asarray(reward_rows), dtype=torch.float32, device=device),
         torch.tensor(np.asarray(done_rows), dtype=torch.float32, device=device),
+        torch.tensor(np.asarray(unlock_rows), dtype=torch.float32, device=device),
+        torch.tensor(np.asarray(affordance_rows), dtype=torch.float32, device=device),
     )
 
 
