@@ -42,7 +42,7 @@ In the realworld, it will be important for robots like the Unitree Go2 Pro to ha
 
 
 
-https://github.com/user-attachments/assets/bb2ba0c9-a6cb-4f05-8fe6-525480a5ddde
+https://github.com/user-attachments/assets/2f3b216f-e69b-4d0a-972c-71141a420b4b
 
 
 
