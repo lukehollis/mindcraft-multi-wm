@@ -24,7 +24,7 @@ class Observation:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_bridge(cls, bot: str, payload: dict[str, Any]) -> "Observation":
+    def from_payload(cls, bot: str, payload: dict[str, Any]) -> "Observation":
         pos = payload.get("position") or {}
         if isinstance(pos, dict):
             position = (
