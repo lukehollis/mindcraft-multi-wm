@@ -36,6 +36,17 @@ In the future this type of continual learning will be used in robotic systems su
 <img width="1920" height="1220" alt="continual_learning_world_model_architecture" src="https://github.com/user-attachments/assets/6a764500-ae89-4b54-835d-163bff702629" />
 
 
+## Realworld Use 
+
+In the realworld, it will be important for robots like the Unitree Go2 Pro to have continous learning from their environment with a method like our small Mindcraft model. We used Isaac Sim and the Go2 Pro robot to implement our continuous learning model in a simulated environment.
+
+https://github.com/user-attachments/assets/6df3118b-2443-4e7f-af82-74242437f3e5
+
+Note: this is a placeholder example video while ours is rendering for the final. https://www.youtube.com/watch?v=8AnsOZK948Y 
+
+Many robotic systems will need to coordinate to achieve tasks in the same way our Minecraft characters coordinate to trade, mine, craft, etc. That's why our multi-agent orchestration agent harness is important for real-world task completion.
+
+
 ## Code
 
 - `mindcraft.world_model`: selective-Mamba 2 based SSM dynamics model with FSQ latent codes, JEPA-style latent prediction, MuZero-style reward/value/policy heads, and optional LoRA adapters.
