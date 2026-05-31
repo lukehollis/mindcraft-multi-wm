@@ -6,7 +6,7 @@ import random
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from mindcraft.skills import SKILLS, shareable_transfer_count
+from mindcraft.skills import SKILLS
 from mindcraft.schemas import Observation
 from mindcraft.progression import (
     count_logs,

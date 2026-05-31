@@ -1,0 +1,60 @@
+minecraft:
+  bridge_uri: ws://localhost:8765
+  host: localhost
+  port: 25565
+  version: "1.21.1"
+  bot_names:
+    - agent_0
+    - agent_1
+  action_timeout_s: 35
+
+learning:
+  seed: 7
+  epsilon: 0.12
+  ucb_c: 0.7
+  curiosity_weight: 0.25
+  gamma: 0.97
+  replay_capacity: 50000
+  frontier_sampling: true
+  hindsight_relabeling: true
+  sequence_length: 8
+  batch_size: 16
+  train_every_steps: 4
+  train_batches: 1
+  warmup_transitions: 16
+  model_dim: 128
+  model_layers: 3
+  model_heads: 4
+  latent_dim: 16
+  ssm_state_dim: 16
+  world_model_ensemble: 3
+  lora_rank: 4
+  freeze_base_for_lora: false
+  mcts_simulations: 32
+  mcts_depth: 3
+  mcts_c_puct: 1.35
+  mcts_uncertainty_weight: 0.35
+  mcts_affordance_gate: 5.0
+  mcts_min_replay: 1000
+  lr: 0.0003
+  checkpoint_every_steps: 50
+  checkpoint_name: world_model.pt
+  reload_checkpoint_path:
+  reload_checkpoint_every_steps: 0
+
+telemetry:
+  enabled: true
+  weave_project: mindcraft
+  wandb_project: mindcraft
+  wandb_entity:
+  wandb_mode: offline
+  run_name: mindcraft
+  tensorboard_enabled: true
+  tensorboard_dir: tensorboard
+
+run:
+  storage_dir: runs/default
+  episodes: 3
+  steps_per_episode: 100
+  bridge: live
+  rally_point:

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import time
+from dataclasses import asdict
 from pathlib import Path
 
+from mindcraft.config import load_config
 from mindcraft.replay import ReplayBuffer
+from mindcraft.telemetry import Telemetry
 from mindcraft.training_logs import TensorboardLogger, append_training_metrics
 from mindcraft.world_model import WorldModelTrainer, sample_device
 
@@ -42,10 +46,19 @@ def main(argv: list[str] | None = None) -> None:
     train.add_argument("--print-every", type=int, default=25)
     train.add_argument("--phase", default="replay")
     train.add_argument("--tensorboard", action="store_true", help="Write TensorBoard events under storage-dir")
+    train.add_argument("--telemetry", action=argparse.BooleanOptionalAction, default=False)
+    train.add_argument("--telemetry-run-name", default=None, help="W&B/Weave run name when telemetry is enabled")
     train.add_argument("--torch-threads", type=int, default=None)
 
     info = sub.add_parser("device-info", help="Print the torch runtime selected by the world model")
     info.add_argument("--torch-threads", type=int, default=None)
+
+    telemetry_check = sub.add_parser("telemetry-check", help="Initialize W&B/Weave and emit a telemetry test event")
+    telemetry_check.add_argument("--config", default="configs/default.yaml")
+    telemetry_check.add_argument("--storage-dir", default=None)
+    telemetry_check.add_argument("--run-name", default="telemetry-check")
+    telemetry_check.add_argument("--require-wandb", action="store_true")
+    telemetry_check.add_argument("--require-weave", action="store_true")
 
     args = parser.parse_args(argv)
     if args.command == "train-replay":
@@ -54,6 +67,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "device-info":
         _set_torch_threads(args.torch_threads)
         print(sample_device())
+    elif args.command == "telemetry-check":
+        _telemetry_check(args)
 
 
 def _train_replay(args: argparse.Namespace) -> None:
@@ -82,6 +97,7 @@ def _train_replay(args: argparse.Namespace) -> None:
     )
     rng = random.Random(args.seed)
     tensorboard = TensorboardLogger(storage_dir, enabled=args.tensorboard)
+    telemetry = _init_training_telemetry(args, storage_dir, replay)
     latest = None
     idx = 0
     try:
@@ -111,6 +127,19 @@ def _train_replay(args: argparse.Namespace) -> None:
             idx += 1
             append_training_metrics(storage_dir, metrics=latest, replay_size=len(replay), phase=args.phase)
             tensorboard.log_world_model(metrics=latest, replay_size=len(replay), phase=args.phase)
+            if telemetry is not None:
+                telemetry.log(
+                    {
+                        "world_model": asdict(latest),
+                        "replay": {
+                            "phase": args.phase,
+                            "size": len(replay),
+                            "batch_size": args.batch_size,
+                            "sequence_length": args.sequence_length,
+                        },
+                    },
+                    step=latest.train_step,
+                )
 
             if args.print_every > 0 and (idx == 1 or idx % args.print_every == 0):
                 print(
@@ -119,6 +148,7 @@ def _train_replay(args: argparse.Namespace) -> None:
                     f"loss={latest.loss:.4f} obs={latest.obs_loss:.4f} "
                     f"jepa={latest.jepa_loss:.4f} reward={latest.reward_loss:.4f} "
                     f"value={latest.value_loss:.4f} policy={latest.policy_loss:.4f} "
+                    f"unlock={latest.unlock_loss:.4f} affordance={latest.affordance_loss:.4f} "
                     f"code_usage={latest.code_usage:.4f}"
                 )
 
@@ -127,11 +157,76 @@ def _train_replay(args: argparse.Namespace) -> None:
                 print(f"checkpointed world model at train_step={latest.train_step} to {trainer.checkpoint_path}")
     finally:
         tensorboard.close()
+        if telemetry is not None:
+            telemetry.finish()
 
     if latest is None:
         raise SystemExit("no trainable replay batches were sampled")
     trainer.save()
     print(f"saved world model to {trainer.checkpoint_path}; train_step={trainer.train_step} loss={trainer.last_loss:.4f}")
+
+
+def _init_training_telemetry(args: argparse.Namespace, storage_dir: Path, replay: ReplayBuffer) -> Telemetry | None:
+    if not args.telemetry:
+        return None
+    run_name = args.telemetry_run_name or f"mindcraft-{args.phase}-{storage_dir.name}"
+    cfg = load_config(
+        None,
+        {
+            "run": {"storage_dir": storage_dir},
+            "telemetry": {"enabled": True, "run_name": run_name, "tensorboard_enabled": args.tensorboard},
+        },
+    )
+    telemetry = Telemetry(cfg)
+    with telemetry.trace(
+        "train_replay_start",
+        {
+            "phase": args.phase,
+            "storage_dir": str(storage_dir),
+            "batch_size": args.batch_size,
+            "sequence_length": args.sequence_length,
+            "follow": args.follow,
+        },
+    ):
+        pass
+    telemetry.log(
+        {
+            "replay": {
+                "phase": args.phase,
+                "size": len(replay),
+                "batch_size": args.batch_size,
+                "sequence_length": args.sequence_length,
+                "follow": args.follow,
+            }
+        },
+        step=0,
+    )
+    return telemetry
+
+
+def _telemetry_check(args: argparse.Namespace) -> None:
+    overrides = {"telemetry": {"run_name": args.run_name}}
+    if args.storage_dir:
+        overrides.setdefault("run", {})["storage_dir"] = Path(args.storage_dir)
+    cfg = load_config(args.config, overrides)
+    telemetry = Telemetry(cfg)
+    with telemetry.trace(
+        "telemetry_check",
+        {
+            "storage_dir": str(cfg.run.storage_dir),
+            "require_wandb": args.require_wandb,
+            "require_weave": args.require_weave,
+        },
+    ):
+        pass
+    telemetry.log({"telemetry_check": {"ok": True}}, step=0)
+    status = telemetry.status
+    telemetry.finish()
+    print(json.dumps(status, indent=2, sort_keys=True))
+    if args.require_wandb and telemetry.wandb is None:
+        raise SystemExit("W&B telemetry did not initialize")
+    if args.require_weave and telemetry.weave is None:
+        raise SystemExit("Weave telemetry did not initialize")
 
 
 def _set_torch_threads(count: int | None) -> None:

@@ -9,6 +9,7 @@ description = "Minimal Minecraft skill world model with replay training and MCTS
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=1.26",
+  "pyyaml>=6.0",
   "tensorboard>=2.16",
   "torch>=2.2",
 ]

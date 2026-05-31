@@ -24,7 +24,7 @@ class Observation:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_payload(cls, bot: str, payload: dict[str, Any]) -> "Observation":
+    def from_bridge(cls, bot: str, payload: dict[str, Any]) -> "Observation":
         pos = payload.get("position") or {}
         if isinstance(pos, dict):
             position = (
@@ -48,6 +48,10 @@ class Observation:
             time_of_day=payload.get("time_of_day"),
             raw=payload,
         )
+
+    @classmethod
+    def from_payload(cls, bot: str, payload: dict[str, Any]) -> "Observation":
+        return cls.from_bridge(bot, payload)
 
     def count_items(self, *names: str) -> int:
         return sum(self.inventory.get(name, 0) for name in names)

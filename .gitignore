@@ -4,6 +4,7 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .venv/
+.pretrained_checkpoints/
 build/
 dist/
 *.egg-info/

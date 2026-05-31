@@ -28,7 +28,7 @@ https://github.com/user-attachments/assets/46ebdd74-aa1f-4a48-922b-768d0dd6f267
 
 The model is a Mamba-style SSM world model with FSQ latent codes, JEPA-style latent prediction, and MuZero-style reward/value/policy heads. 
 
-In the future this type of continual learning will be used in robotic systems such as Unitree G2 Pro Robot Dog to learn and generalize to new tasks and environments. 
+In the future this type of continual learning will be used in robotic systems such as Unitree Go2 Pro to learn and generalize to new tasks and environments.
 
 
 ## Model Architecture
@@ -53,8 +53,14 @@ Many robotic systems will need to coordinate to achieve tasks in the same way ou
 - `mindcraft.replay`: persistent JSONL replay buffer with per-agent sequence windows, validation holdout windows, and progression-aware sampling.
 - `mindcraft.skill_library`: learned skill values, preconditions, curiosity scores, and curriculum candidates.
 - `mindcraft.planning`: MCTS planner that rolls candidate skills through the world model and penalizes uncertain predictions.
+- `mindcraft.config`: YAML-backed run, learning, and telemetry config dataclasses.
+- `mindcraft.robotics`: Isaac Lab Unitree Go2 continual-learning replay, skill library, and world-model trainer.
+- `mindcraft.telemetry`: optional W&B/Weave status, traces, and metric logging.
 - `mindcraft.training_logs`: JSONL metrics and optional TensorBoard logging.
+- `scripts/replay_multiplexer.py`: merge multiple replay shards into one deduplicated training buffer.
+- `scripts/isaac_go2_continual_demo.py`: Isaac Lab demo that trains the robotics world model online.
 - `dashboard/`: live Next.js dashboard for agent feeds, world camera, society map, activity, and learning/progress graphs.
+- `figures/`: local presentation and architecture assets.
 
 ## Setup
 
@@ -79,8 +85,10 @@ Useful flags:
 
 ```sh
 mindcraft train-replay --storage-dir runs/default --device cuda --tensorboard
+mindcraft train-replay --storage-dir runs/default --telemetry --telemetry-run-name mindcraft-replay
 mindcraft train-replay --storage-dir runs/default --follow --batches 0
 mindcraft train-replay --storage-dir runs/default --no-hindsight-relabeling --no-frontier-sampling
+mindcraft telemetry-check --storage-dir runs/default --run-name telemetry-check
 mindcraft device-info
 ```
 
@@ -90,6 +98,22 @@ The main artifacts are:
 - `world_model_checkpoint.json`
 - `training_metrics.jsonl`
 - `tensorboard/` when `--tensorboard` is set
+
+## Robotics Demo
+
+The Isaac Lab demo mirrors the Minecraft continual-learning loop for Unitree Go2 velocity-control skills.
+
+```sh
+PYTHONPATH=$PWD /home/trantor/Research/computational_robotics/IsaacLab/isaaclab.sh \
+  -p scripts/isaac_go2_continual_demo.py \
+  --headless \
+  --num_envs 4
+```
+
+Use `--video` to record an mp4 rollout. Local demo outputs were migrated under
+`runs/isaac_go2_video` and `runs/isaac_go2_video_policy`.
+
+See `docs/isaac_go2_continual_demo.md` for the full run options and outputs.
 
 ## Dashboard
 
