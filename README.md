@@ -5,7 +5,9 @@ https://github.com/user-attachments/assets/1a893b56-da7c-4ae2-8af9-9d4bd36efe4d
 
 # Mindcraft: Multi-agent World Model for Continuous Learning Agents
 
-Continuous learning agents inside Minecraft based on Andrej Karpathy’s Animals v. Ghosts
+[Code](https://github.com/lukehollis/mindcraft-multi-wm) [Live Demo](http://mindcraft.fyi/)
+
+Continuous learning agents inside Minecraft based on [Andrej Karpathy’s Animals v. Ghosts](https://karpathy.bearblog.dev/animals-vs-ghosts/).
 
 In Andrej Karpathy's blog "Animals v. Ghosts," he argues how LLMs are more like ghosts than animals because their intelligence is distilled from existing human documents. He writes, "We do not in fact have an actual, single, clean, actually bitter lesson pilled, 'turn the crank' algorithm that you could unleash upon the world and see it learn automatically from experience alone." 
 
@@ -21,9 +23,13 @@ The model is a Mamba-style SSM world model with FSQ latent codes, JEPA-style lat
 
 In the future this type of continual learning will be used in robotic systems such as Unitree G2 Pro Robot Dog to learn and generalize to new tasks and environments. 
 
-So the real question is, do you want a continuously learning Unitree G2 Pro Robot Dog?
 
-## What Is Included
+## Model Architecture
+
+<img width="1920" height="1220" alt="continual_learning_world_model_architecture" src="https://github.com/user-attachments/assets/6a764500-ae89-4b54-835d-163bff702629" />
+
+
+## Code
 
 - `mindcraft.world_model`: selective-Mamba 2 based SSM dynamics model with FSQ latent codes, JEPA-style latent prediction, MuZero-style reward/value/policy heads, and optional LoRA adapters.
 - `mindcraft.replay`: persistent JSONL replay buffer with per-agent sequence windows, validation holdout windows, and progression-aware sampling.
@@ -31,8 +37,6 @@ So the real question is, do you want a continuously learning Unitree G2 Pro Robo
 - `mindcraft.planning`: MCTS planner that rolls candidate skills through the world model and penalizes uncertain predictions.
 - `mindcraft.training_logs`: JSONL metrics and optional TensorBoard logging.
 - `dashboard/`: live Next.js dashboard for agent feeds, world camera, society map, activity, and learning/progress graphs.
-
-The live bridge, dashboard, and old orchestration code are intentionally not part of this repo.
 
 ## Setup
 
