@@ -56,6 +56,15 @@ Many robotic systems will need to coordinate to achieve tasks in the same way ou
 - `mindcraft.training_logs`: JSONL metrics and optional TensorBoard logging.
 - `dashboard/`: live Next.js dashboard for agent feeds, world camera, society map, activity, and learning/progress graphs.
 
+
+## W&B 
+
+We use W&B for tracking the continual learning while observing the environment. In production, this could easily be adapted to robotic systems for a diverse range of objectives.
+
+<img width="3004" height="2002" alt="wandb_logging" src="https://github.com/user-attachments/assets/22cd6da0-c3f4-448e-8b6f-447f9c45499f" />
+
+
+
 ## Setup
 
 ```sh
