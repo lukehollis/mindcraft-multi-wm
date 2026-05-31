@@ -525,6 +525,14 @@ canvas {
   min-width: 0;
 }
 
+.graph-card-wide {
+  grid-column: span 2;
+}
+
+.graph-card-full {
+  grid-column: 1 / -1;
+}
+
 .graph-card-head {
   border-bottom: 1px solid var(--lab-line-soft);
   background:
@@ -544,6 +552,14 @@ canvas {
   background: #000407;
 }
 
+.graph-card-wide .graph-canvas {
+  height: 260px;
+}
+
+.graph-card-full .graph-canvas {
+  height: 300px;
+}
+
 .empty-state {
   min-height: 320px;
   display: grid;
@@ -559,6 +575,11 @@ canvas {
   .overview-grid,
   .graphs-grid {
     grid-template-columns: 1fr;
+  }
+
+  .graph-card-wide,
+  .graph-card-full {
+    grid-column: auto;
   }
 
   .overview-grid {

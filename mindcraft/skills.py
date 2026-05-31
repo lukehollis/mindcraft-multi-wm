@@ -185,4 +185,10 @@ SKILLS: dict[str, Skill] = {
         ("recovery", "culture"),
         {"range": 3},
     ),
+    "mine_coal": Skill(
+        "mine_coal",
+        "Mine coal ore for furnace fuel and torches.",
+        ("stone", "iron"),
+        {"blocks": ["coal_ore", "deepslate_coal_ore"], "count": 4},
+    ),
 }

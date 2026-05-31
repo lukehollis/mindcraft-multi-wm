@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from math import dist
 from typing import Iterable
 
-from mindcraft.skills import WOOD_LOG_ITEMS, WOOD_PLANK_ITEMS
-from mindcraft.schemas import Observation, Transition
+from dataclasses import replace
+
+from mindcraft.skills import SKILLS, WOOD_LOG_ITEMS, WOOD_PLANK_ITEMS, shareable_transfer_count
+from mindcraft.schemas import Observation, SkillResult, Transition
 
 
 PROGRESSION_ITEMS = (
@@ -17,6 +19,7 @@ PROGRESSION_ITEMS = (
     "cobblestone",
     "furnace",
     "stone_pickaxe",
+    "coal",
     "iron_ore",
     "iron_ingot",
     "iron_pickaxe",
@@ -35,6 +38,7 @@ MILESTONE_BONUS = {
     "cobblestone": 2.0,
     "furnace": 7.0,
     "stone_pickaxe": 10.0,
+    "coal": 4.0,
     "iron_ore": 12.0,
     "iron_ingot": 14.0,
     "iron_pickaxe": 20.0,
@@ -81,6 +85,24 @@ STAGES = (
     ProgressStage(10, "diamond", "culture"),
 )
 
+MILESTONE_SKILLS = {
+    "logs": "forage_wood",
+    "planks": "craft_planks",
+    "stick": "craft_sticks",
+    "crafting_table": "craft_crafting_table",
+    "wooden_pickaxe": "craft_wooden_pickaxe",
+    "cobblestone": "mine_stone",
+    "stone_pickaxe": "craft_stone_pickaxe",
+    "coal": "mine_coal",
+    "furnace": "craft_furnace",
+    "iron_ore": "mine_iron",
+    "iron_ingot": "smelt_iron",
+    "iron_pickaxe": "craft_iron_pickaxe",
+    "diamond": "mine_diamond",
+}
+
+SKILL_MILESTONES = {skill: item for item, skill in MILESTONE_SKILLS.items()}
+
 
 def snapshot(obs: Observation) -> dict[str, int]:
     inv = obs.inventory
@@ -94,6 +116,7 @@ def snapshot(obs: Observation) -> dict[str, int]:
         "cobblestone": inv.get("cobblestone", 0),
         "furnace": inv.get("furnace", 0) + nearby.get("furnace", 0),
         "stone_pickaxe": inv.get("stone_pickaxe", 0),
+        "coal": inv.get("coal", 0) + inv.get("charcoal", 0),
         "iron_ore": inv.get("iron_ore", 0) + inv.get("deepslate_iron_ore", 0),
         "iron_ingot": inv.get("iron_ingot", 0),
         "iron_pickaxe": inv.get("iron_pickaxe", 0),
@@ -172,20 +195,110 @@ def transition_event_bucket(transition: Transition) -> str:
     return f"failure:{transition.skill}"
 
 
-def replay_priority(transition: Transition) -> float:
+def replay_priority(
+    transition: Transition,
+    *,
+    frontier_items: set[str] | None = None,
+    skill_counts: dict[str, int] | None = None,
+) -> float:
     delta = transition_delta(transition.observation, transition.next_observation)
     priority = 1.0
     if delta.stage_delta > 0:
         priority += 6.0 + 2.0 * delta.stage_delta
     for milestone in delta.first_milestones:
         priority += MILESTONE_BONUS.get(milestone, 1.0)
-    if transition.skill in {"craft_furnace", "craft_stone_pickaxe", "mine_iron", "smelt_iron", "craft_iron_pickaxe", "mine_diamond"}:
+    if transition.skill in {"craft_furnace", "craft_stone_pickaxe", "mine_coal", "mine_iron", "smelt_iron", "craft_iron_pickaxe", "mine_diamond"}:
         priority += 3.0
+    if frontier_items:
+        touched = set(delta.first_milestones)
+        touched.update(name for name, value in delta.item_deltas.items() if value > 0)
+        skill_target = SKILL_MILESTONES.get(transition.skill)
+        if touched.intersection(frontier_items) or (skill_target and skill_target in frontier_items):
+            priority += 8.0
+        elif delta.after_stage.index >= max(0, delta.before_stage.index):
+            next_targets = set(frontier_items)
+            if any(target in {"stone_pickaxe", "coal", "furnace", "iron_ore", "iron_ingot"} for target in next_targets):
+                if transition.skill in {"craft_stone_pickaxe", "mine_coal", "craft_furnace", "mine_iron", "smelt_iron"}:
+                    priority += 2.5
     if not transition.result.success:
         priority += 0.75
     if transition.skill in CONTROL_SKILLS and not delta.advanced:
         priority *= 0.35
+    if skill_counts:
+        count = max(1, skill_counts.get(transition.skill, 1))
+        median_count = _median_count(skill_counts)
+        if transition.skill not in CONTROL_SKILLS and count < median_count:
+            priority *= min(3.0, 1.0 + median_count / (count + median_count))
     return max(0.05, priority)
+
+
+def frontier_items_for_stage(stage: ProgressStage | int) -> tuple[str, ...]:
+    index = stage if isinstance(stage, int) else stage.index
+    if index <= 0:
+        return ("logs", "planks", "stick", "crafting_table")
+    if index == 1:
+        return ("planks", "stick", "crafting_table", "wooden_pickaxe")
+    if index == 2:
+        return ("stick", "wooden_pickaxe", "cobblestone")
+    if index == 3:
+        return ("cobblestone", "stone_pickaxe")
+    if index == 4:
+        return ("stone_pickaxe", "coal", "furnace")
+    if index == 5:
+        return ("coal", "furnace", "iron_ore")
+    if index == 6:
+        return ("coal", "iron_ore", "iron_ingot")
+    if index == 7:
+        return ("coal", "iron_ingot", "iron_pickaxe")
+    if index == 8:
+        return ("iron_pickaxe", "diamond")
+    return ("diamond",)
+
+
+def hindsight_relabels(transition: Transition, max_relabels: int = 2) -> list[Transition]:
+    if transition.result.data.get("hindsight"):
+        return []
+    delta = transition_delta(transition.observation, transition.next_observation)
+    milestones = list(delta.first_milestones)
+    if not milestones:
+        milestones = [
+            name
+            for name, value in sorted(delta.item_deltas.items(), key=lambda item: (MILESTONE_BONUS.get(item[0], 0.0), item[1]), reverse=True)
+            if value > 0
+        ]
+    relabels: list[Transition] = []
+    seen: set[str] = set()
+    for milestone in milestones:
+        skill = MILESTONE_SKILLS.get(milestone)
+        if skill is None or skill == transition.skill or skill in seen:
+            continue
+        if skill not in SKILLS:
+            continue
+        seen.add(skill)
+        reward = max(transition.reward, MILESTONE_BONUS.get(milestone, 1.0) + max(0, delta.stage_delta) * 2.0)
+        relabels.append(
+            replace(
+                transition,
+                goal=stage_for_observation(transition.next_observation).goal,
+                skill=skill,
+                result=SkillResult(
+                    skill=skill,
+                    success=True,
+                    message=f"hindsight relabel: {milestone} via {transition.skill}",
+                    data={
+                        **transition.result.data,
+                        "hindsight": True,
+                        "original_skill": transition.skill,
+                        "milestone": milestone,
+                    },
+                    duration_s=transition.result.duration_s,
+                ),
+                reward=reward,
+            )
+        )
+        if len(relabels) >= max_relabels:
+            break
+    return relabels
 
 
 def curriculum_skill_order(obs: Observation) -> list[str]:
@@ -200,6 +313,7 @@ def curriculum_skill_order(obs: Observation) -> list[str]:
     iron_pickaxe = current["iron_pickaxe"]
     cobblestone = current["cobblestone"]
     furnace = current["furnace"]
+    coal = current["coal"]
     iron_ore = current["iron_ore"]
     iron_ingot = current["iron_ingot"]
 
@@ -224,6 +338,8 @@ def curriculum_skill_order(obs: Observation) -> list[str]:
     if stone_pickaxe > 0:
         if furnace <= 0:
             return _furnace_order(inv, obs, cobblestone, table)
+        if coal <= 0 and (obs.nearby_blocks.get("coal_ore", 0) or obs.nearby_blocks.get("deepslate_coal_ore", 0)):
+            return ["mine_coal", "mine_iron", "explore_area"]
         return ["mine_iron", "explore_area"]
     if cobblestone >= 3 and sticks >= 2:
         if table <= 0:
@@ -285,6 +401,60 @@ def has_fuel(obs: Observation) -> bool:
     )
 
 
+def skill_preconditions_ok(name: str, obs: Observation) -> bool:
+    inv = obs.inventory
+    planks = count_planks(inv)
+    logs = count_logs(inv)
+    table = has_table_access(obs)
+    pickaxes = inv.get("wooden_pickaxe", 0) + inv.get("stone_pickaxe", 0) + inv.get("iron_pickaxe", 0)
+    if name == "craft_planks":
+        return logs > 0
+    if name == "craft_sticks":
+        return planks >= 2
+    if name == "craft_crafting_table":
+        return planks >= 4 and inv.get("crafting_table", 0) == 0 and obs.nearby_blocks.get("crafting_table", 0) == 0
+    if name == "place_crafting_table":
+        return inv.get("crafting_table", 0) > 0
+    if name == "craft_wooden_pickaxe":
+        return planks >= 3 and inv.get("stick", 0) >= 2 and table
+    if name == "mine_stone":
+        return pickaxes > 0
+    if name == "craft_stone_pickaxe":
+        return inv.get("cobblestone", 0) >= 3 and inv.get("stick", 0) >= 2 and table
+    if name == "mine_coal":
+        return pickaxes > 0
+    if name == "mine_iron":
+        return inv.get("stone_pickaxe", 0) + inv.get("iron_pickaxe", 0) > 0
+    if name == "craft_furnace":
+        return inv.get("cobblestone", 0) >= 8 and inv.get("furnace", 0) == 0 and table
+    if name == "smelt_iron":
+        return inv.get("iron_ore", 0) > 0 and inv.get("furnace", 0) > 0 and has_fuel(obs)
+    if name == "craft_iron_pickaxe":
+        return inv.get("iron_ingot", 0) >= 3 and inv.get("stick", 0) >= 2 and inv.get("iron_pickaxe", 0) == 0 and table
+    if name == "mine_diamond":
+        return inv.get("iron_pickaxe", 0) > 0
+    if name == "share_supplies":
+        if inv.get("iron_pickaxe", 0) > 0 and inv.get("diamond", 0) == 0:
+            return False
+        return any(shareable_transfer_count(item, count) > 0 for item, count in inv.items())
+    if name == "escape_water":
+        return water_pressure(obs) >= 24
+    if name == "find_crafting_spot":
+        return inv.get("crafting_table", 0) > 0 or obs.nearby_blocks.get("crafting_table", 0) > 0
+    if name == "unstuck_reposition":
+        return True
+    if name == "move_to_teammate":
+        return obs.nearby_entities.get("player", 0) > 0
+    return name in SKILLS
+
+
+def skill_affordance_mask(obs: Observation, *, include_recovery: bool = True) -> dict[str, bool]:
+    return {
+        name: skill_preconditions_ok(name, obs) and (include_recovery or name not in RECOVERY_SKILLS)
+        for name in SKILLS
+    }
+
+
 def nearby_wood(obs: Observation) -> bool:
     return any(obs.nearby_blocks.get(name, 0) > 0 for name in WOOD_LOG_ITEMS) or any(
         name.endswith("_log") or name.endswith("_stem")
@@ -320,4 +490,16 @@ def _furnace_order(inv: dict[str, int], obs: Observation, cobblestone: int, tabl
         return ["mine_stone"]
     if table <= 0:
         return _table_setup_order(inv, count_planks(inv), obs)
+    if not has_fuel(obs) and (obs.nearby_blocks.get("coal_ore", 0) or obs.nearby_blocks.get("deepslate_coal_ore", 0)):
+        return ["mine_coal", "craft_furnace"]
     return ["craft_furnace"]
+
+
+def _median_count(counts: dict[str, int]) -> float:
+    values = sorted(value for value in counts.values() if value > 0)
+    if not values:
+        return 1.0
+    mid = len(values) // 2
+    if len(values) % 2:
+        return float(values[mid])
+    return 0.5 * (values[mid - 1] + values[mid])

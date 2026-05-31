@@ -14,6 +14,7 @@ from mindcraft.progression import (
     curriculum_skill_order,
     has_table_access,
     nearby_wood,
+    skill_preconditions_ok,
     water_pressure,
 )
 
@@ -229,46 +230,7 @@ class SkillLibrary:
         return self.agent_stats.setdefault(agent_id, {name: SkillStats() for name in SKILLS})
 
     def _preconditions_ok(self, name: str, obs: Observation) -> bool:
-        inv = obs.inventory
-        planks = count_planks(inv)
-        logs = count_logs(inv)
-        if name == "craft_planks":
-            return logs > 0
-        if name == "craft_sticks":
-            return planks >= 2
-        if name == "craft_crafting_table":
-            return planks >= 4 and inv.get("crafting_table", 0) == 0 and obs.nearby_blocks.get("crafting_table", 0) == 0
-        if name == "place_crafting_table":
-            return inv.get("crafting_table", 0) > 0
-        if name == "craft_wooden_pickaxe":
-            return planks >= 3 and inv.get("stick", 0) >= 2 and has_table_access(obs)
-        if name == "mine_stone":
-            return inv.get("wooden_pickaxe", 0) + inv.get("stone_pickaxe", 0) + inv.get("iron_pickaxe", 0) > 0
-        if name == "craft_stone_pickaxe":
-            return inv.get("cobblestone", 0) >= 3 and inv.get("stick", 0) >= 2 and has_table_access(obs)
-        if name == "mine_iron":
-            return inv.get("stone_pickaxe", 0) + inv.get("iron_pickaxe", 0) > 0
-        if name == "craft_furnace":
-            return inv.get("cobblestone", 0) >= 8 and inv.get("furnace", 0) == 0 and has_table_access(obs)
-        if name == "smelt_iron":
-            return inv.get("iron_ore", 0) > 0 and inv.get("furnace", 0) > 0
-        if name == "craft_iron_pickaxe":
-            return inv.get("iron_ingot", 0) >= 3 and inv.get("stick", 0) >= 2 and inv.get("iron_pickaxe", 0) == 0 and has_table_access(obs)
-        if name == "mine_diamond":
-            return inv.get("iron_pickaxe", 0) > 0
-        if name == "share_supplies":
-            if inv.get("iron_pickaxe", 0) > 0 and inv.get("diamond", 0) == 0:
-                return False
-            return any(shareable_transfer_count(item, count) > 0 for item, count in inv.items())
-        if name == "escape_water":
-            return water_pressure(obs) >= 24
-        if name == "find_crafting_spot":
-            return inv.get("crafting_table", 0) > 0 or obs.nearby_blocks.get("crafting_table", 0) > 0
-        if name == "unstuck_reposition":
-            return True
-        if name == "move_to_teammate":
-            return obs.nearby_entities.get("player", 0) > 0
-        return True
+        return skill_preconditions_ok(name, obs)
 
     def _inventory_affordance_bonus(self, name: str, obs: Observation) -> float:
         if not self._preconditions_ok(name, obs):
@@ -299,6 +261,8 @@ class SkillLibrary:
             return 0.4 if logs + planks < 12 else -1.0
         if name == "mine_stone" and obs.nearby_blocks.get("stone", 0):
             return 8.0 if pickaxes and inv.get("cobblestone", 0) < 16 else 0.35
+        if name == "mine_coal" and (obs.nearby_blocks.get("coal_ore", 0) or obs.nearby_blocks.get("deepslate_coal_ore", 0)):
+            return 10.0 if pickaxes and inv.get("coal", 0) < 8 else 0.5
         if name == "mine_iron" and (obs.nearby_blocks.get("iron_ore", 0) or obs.nearby_blocks.get("deepslate_iron_ore", 0)):
             if inv.get("iron_pickaxe", 0) > 0:
                 return -20.0

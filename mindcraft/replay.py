@@ -8,13 +8,28 @@ from pathlib import Path
 from typing import Iterable
 
 from mindcraft.schemas import Transition
-from mindcraft.progression import replay_priority, transition_event_bucket
+from mindcraft.progression import (
+    frontier_items_for_stage,
+    hindsight_relabels,
+    replay_priority,
+    stage_for_observation,
+    transition_event_bucket,
+)
 
 
 class ReplayBuffer:
-    def __init__(self, path: Path, capacity: int = 50_000):
+    def __init__(
+        self,
+        path: Path,
+        capacity: int = 50_000,
+        *,
+        hindsight_relabeling: bool = False,
+        frontier_sampling: bool = True,
+    ):
         self.path = path
         self.capacity = capacity
+        self.hindsight_relabeling = hindsight_relabeling
+        self.frontier_sampling = frontier_sampling
         self.items: deque[Transition] = deque(maxlen=capacity)
         self._offset = 0
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -47,7 +62,13 @@ class ReplayBuffer:
             windows = self._sequence_windows(sequence_length)
         if not windows:
             return []
-        return _sample_stratified(windows, batch_size, rng)
+        return _sample_stratified(
+            windows,
+            batch_size,
+            rng,
+            frontier_items=self._frontier_items() if self.frontier_sampling else set(),
+            skill_counts=self._skill_counts() if self.frontier_sampling else {},
+        )
 
     def sample_validation_sequences(
         self,
@@ -106,14 +127,36 @@ class ReplayBuffer:
                 is_holdout = window_index % 5 == 4
                 window_index += 1
                 if holdout is None or holdout == is_holdout:
-                    windows.append(trajectory[start : start + sequence_length])
+                    window = trajectory[start : start + sequence_length]
+                    windows.append(window)
+                    if self.hindsight_relabeling and holdout is not True:
+                        windows.extend(_hindsight_windows(window))
         return windows
+
+    def _frontier_items(self) -> set[str]:
+        if not self.items:
+            return set()
+        best_stage = max(
+            (stage_for_observation(transition.next_observation) for transition in self.items),
+            key=lambda stage: stage.index,
+        )
+        return set(frontier_items_for_stage(best_stage))
+
+    def _skill_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = defaultdict(int)
+        for transition in self.items:
+            if not transition.result.data.get("hindsight"):
+                counts[transition.skill] += 1
+        return dict(counts)
 
 
 def _sample_stratified(
     windows: list[list[Transition]],
     batch_size: int,
     rng: random.Random,
+    *,
+    frontier_items: set[str] | None = None,
+    skill_counts: dict[str, int] | None = None,
 ) -> list[list[Transition]]:
     buckets: dict[tuple[str, str, str, bool], list[list[Transition]]] = defaultdict(list)
     bucket_weights: dict[tuple[str, str, str, bool], float] = {}
@@ -121,7 +164,10 @@ def _sample_stratified(
         last = window[-1]
         key = (transition_event_bucket(last), last.agent, last.skill, last.result.success)
         buckets[key].append(window)
-        bucket_weights[key] = max(bucket_weights.get(key, 0.0), replay_priority(last))
+        bucket_weights[key] = max(
+            bucket_weights.get(key, 0.0),
+            replay_priority(last, frontier_items=frontier_items, skill_counts=skill_counts),
+        )
     keys = list(buckets)
     rng.shuffle(keys)
     sequences: list[list[Transition]] = []
@@ -161,3 +207,10 @@ def _weighted_window_choice(windows: list[list[Transition]], rng: random.Random)
         if running >= target:
             return list(window)
     return list(windows[-1])
+
+
+def _hindsight_windows(window: list[Transition]) -> list[list[Transition]]:
+    if not window:
+        return []
+    relabels = hindsight_relabels(window[-1])
+    return [list(window[:-1]) + [relabel] for relabel in relabels]

@@ -22,8 +22,8 @@ const BLOCK_COLORS: Record<string, string> = {
 const AGENT_COLORS = ['#00f5ff', '#00ffa3', '#f8ff6a', '#ff2bd6', '#8b5cff', '#ff7a18']
 const BRIDGE_HTTP_ENV = process.env.NEXT_PUBLIC_BRIDGE_HTTP
 const BRIDGE_WS_ENV = process.env.NEXT_PUBLIC_BRIDGE_WS
-const MAX_INLINE_VIEWERS = 12
-const MAX_ACTIVE_WEBGL_VIEWERS = 6
+const MAX_INLINE_VIEWERS = 9
+const MAX_ACTIVE_WEBGL_VIEWERS = 9
 const MAX_OVERVIEW_WEBGL_AGENTS = 12
 const CLIENT_COMMIT_INTERVAL_MS = configInt(process.env.NEXT_PUBLIC_CLIENT_COMMIT_INTERVAL_MS, 750, 100)
 const CLIENT_BLOCK_LIMIT = configInt(process.env.NEXT_PUBLIC_CLIENT_BLOCK_LIMIT, 64)
@@ -36,9 +36,53 @@ const VIEWER_IFRAME_FPS = configNumber(process.env.NEXT_PUBLIC_VIEWER_FPS, 4, 0)
 const VIEWER_IFRAME_DPR = configNumber(process.env.NEXT_PUBLIC_VIEWER_DPR, 1, 0.1)
 
 type DashboardHistoryPoint = {
+  ts: number
   nearestDistance: number
   inventoryValue: number
+  craftProgress: number
+  successRate: number
+  actionDiversity: number
+  meanDurationMs: number
 }
+
+type CraftNode = {
+  id: string
+  label: string
+  aliases: string[]
+  deps: string[]
+  tier: number
+  lane: number
+}
+
+type CraftUnlock = {
+  firstSeenAt: number
+  lastSeenAt: number
+  count: number
+  agents: string[]
+}
+
+type CraftObservation = {
+  seen: boolean
+  active: boolean
+  count: number
+  agents: string[]
+}
+
+const CRAFTING_TREE: CraftNode[] = [
+  { id: 'logs', label: 'logs', aliases: ['log'], deps: [], tier: 0, lane: 1 },
+  { id: 'planks', label: 'planks', aliases: ['planks'], deps: ['logs'], tier: 1, lane: 1 },
+  { id: 'table', label: 'table', aliases: ['crafting_table'], deps: ['planks'], tier: 2, lane: 0 },
+  { id: 'sticks', label: 'sticks', aliases: ['stick'], deps: ['planks'], tier: 2, lane: 2 },
+  { id: 'wood_pick', label: 'wood pick', aliases: ['wooden_pickaxe'], deps: ['table', 'sticks', 'planks'], tier: 3, lane: 1 },
+  { id: 'cobble', label: 'cobble', aliases: ['cobblestone'], deps: ['wood_pick'], tier: 4, lane: 1 },
+  { id: 'stone_pick', label: 'stone pick', aliases: ['stone_pickaxe'], deps: ['cobble', 'sticks', 'table'], tier: 5, lane: 0 },
+  { id: 'furnace', label: 'furnace', aliases: ['furnace'], deps: ['cobble'], tier: 5, lane: 2 },
+  { id: 'coal', label: 'coal', aliases: ['coal', 'charcoal'], deps: ['wood_pick'], tier: 6, lane: 0 },
+  { id: 'raw_iron', label: 'raw iron', aliases: ['raw_iron', 'iron_ore'], deps: ['stone_pick'], tier: 6, lane: 1 },
+  { id: 'iron_ingot', label: 'iron ingot', aliases: ['iron_ingot'], deps: ['raw_iron', 'furnace', 'coal'], tier: 7, lane: 1 },
+  { id: 'iron_pick', label: 'iron pick', aliases: ['iron_pickaxe'], deps: ['iron_ingot', 'sticks', 'table'], tier: 8, lane: 1 },
+  { id: 'diamond', label: 'diamond', aliases: ['diamond'], deps: ['iron_pick'], tier: 9, lane: 1 }
+]
 
 export function MindcraftDashboard() {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null)
@@ -48,12 +92,14 @@ export function MindcraftDashboard() {
   const [webglAvailable, setWebglAvailable] = useState(true)
   const [overflowOpen, setOverflowOpen] = useState(false)
   const [activeWebglLimit, setActiveWebglLimit] = useState(MAX_ACTIVE_WEBGL_VIEWERS)
+  const [craftUnlocks, setCraftUnlocks] = useState<Record<string, CraftUnlock>>({})
 
   useEffect(() => {
     let cancelled = false
     let ws: WebSocket | null = null
     let reconnectTimer: number | null = null
     let commitTimer: number | null = null
+    let pollTimer: number | null = null
     let pendingSnapshot: DashboardSnapshot | null = null
     let lastCommitAt = 0
     const endpoints = resolveBridgeEndpoints()
@@ -64,7 +110,7 @@ export function MindcraftDashboard() {
     const flushSnapshot = () => {
       commitTimer = null
       if (cancelled || !pendingSnapshot) return
-      commitSnapshot(pendingSnapshot, setSnapshot, setHistory)
+      commitSnapshot(pendingSnapshot, setSnapshot, setHistory, setCraftUnlocks)
       pendingSnapshot = null
       lastCommitAt = window.performance.now()
     }
@@ -83,19 +129,41 @@ export function MindcraftDashboard() {
       if (!commitTimer) commitTimer = window.setTimeout(flushSnapshot, delay)
     }
 
-    const connect = async () => {
+    const pollSnapshot = async () => {
       try {
         const response = await fetch(`${endpoints.http}/snapshot`, { cache: 'no-store' })
-        if (response.ok && !cancelled) {
-          const initial = (await response.json()) as DashboardSnapshot
-          enqueueSnapshot(initial)
-        }
+        if (!response.ok || cancelled) throw new Error('snapshot unavailable')
+        const next = (await response.json()) as DashboardSnapshot
+        enqueueSnapshot(next)
+        setConnected(true)
       } catch {
-        // The websocket retry below is the primary live path.
+        if (!cancelled) setConnected(false)
+      }
+    }
+
+    const schedulePolling = (delay = 0) => {
+      if (pollTimer) window.clearTimeout(pollTimer)
+      pollTimer = window.setTimeout(async () => {
+        pollTimer = null
+        if (cancelled) return
+        const websocketOpen = ws?.readyState === WebSocket.OPEN
+        if (!websocketOpen) await pollSnapshot()
+        schedulePolling(websocketOpen ? 5000 : 1500)
+      }, delay)
+    }
+
+    const connect = async () => {
+      await pollSnapshot()
+      if (!endpoints.ws) {
+        schedulePolling(1500)
+        return
       }
       if (cancelled) return
       ws = new WebSocket(endpoints.ws)
-      ws.onopen = () => setConnected(true)
+      ws.onopen = () => {
+        setConnected(true)
+        schedulePolling(5000)
+      }
       ws.onmessage = (event) => {
         try {
           const next = JSON.parse(event.data) as DashboardSnapshot
@@ -107,7 +175,10 @@ export function MindcraftDashboard() {
       ws.onerror = () => setConnected(false)
       ws.onclose = () => {
         setConnected(false)
-        if (!cancelled) reconnectTimer = window.setTimeout(connect, 1500)
+        if (!cancelled) {
+          schedulePolling(0)
+          reconnectTimer = window.setTimeout(connect, 1500)
+        }
       }
     }
 
@@ -116,6 +187,7 @@ export function MindcraftDashboard() {
       cancelled = true
       if (reconnectTimer) window.clearTimeout(reconnectTimer)
       if (commitTimer) window.clearTimeout(commitTimer)
+      if (pollTimer) window.clearTimeout(pollTimer)
       if (ws) ws.close()
     }
   }, [])
@@ -229,6 +301,15 @@ export function MindcraftDashboard() {
         <GraphCard title="Action Mix">
           <ActionGraph snapshot={snapshot} />
         </GraphCard>
+        <GraphCard title="Crafting Tree" className="graph-card-wide">
+          <CraftingTreeGraph snapshot={snapshot} unlocks={craftUnlocks} />
+        </GraphCard>
+        <GraphCard title="Learning Signals">
+          <LearningGraph history={history} />
+        </GraphCard>
+        <GraphCard title="Capability Matrix" className="graph-card-full">
+          <CapabilityGraph snapshot={snapshot} />
+        </GraphCard>
       </section>
     </main>
   )
@@ -237,15 +318,23 @@ export function MindcraftDashboard() {
 function commitSnapshot(
   next: DashboardSnapshot,
   setSnapshot: (snapshot: DashboardSnapshot) => void,
-  setHistory: Dispatch<SetStateAction<DashboardHistoryPoint[]>>
+  setHistory: Dispatch<SetStateAction<DashboardHistoryPoint[]>>,
+  setCraftUnlocks: Dispatch<SetStateAction<Record<string, CraftUnlock>>>
 ) {
   const compact = compactSnapshot(next)
+  const metrics = learningMetrics(compact)
   setSnapshot(compact)
+  setCraftUnlocks((items) => mergeCraftUnlocks(items, compact))
   setHistory((items) => [
     ...items.slice(-239),
     {
+      ts: compact.ts,
       nearestDistance: minAgentDistance(compact) ?? 0,
-      inventoryValue: inventoryValue(compact)
+      inventoryValue: inventoryValue(compact),
+      craftProgress: metrics.craftProgress,
+      successRate: metrics.successRate,
+      actionDiversity: metrics.actionDiversity,
+      meanDurationMs: metrics.meanDurationMs
     }
   ])
 }
@@ -473,9 +562,9 @@ function MapLegend() {
   )
 }
 
-function GraphCard({ title, children }: { title: string; children: ReactNode }) {
+function GraphCard({ title, children, className }: { title: string; children: ReactNode; className?: string }) {
   return (
-    <section className="graph-card">
+    <section className={`graph-card ${className ?? ''}`}>
       <div className="graph-card-head">
         <h2>{title}</h2>
       </div>
@@ -512,6 +601,45 @@ function ActionGraph({ snapshot }: { snapshot: DashboardSnapshot | null }) {
     if (!canvas) return
     const ctx = fitCanvas(canvas)
     drawActionGraph(ctx, canvas, snapshot)
+  }, [snapshot])
+  return <canvas ref={canvasRef} className="graph-canvas" />
+}
+
+function CraftingTreeGraph({
+  snapshot,
+  unlocks
+}: {
+  snapshot: DashboardSnapshot | null
+  unlocks: Record<string, CraftUnlock>
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = fitCanvas(canvas)
+    drawCraftingTree(ctx, canvas, snapshot, unlocks)
+  }, [snapshot, unlocks])
+  return <canvas ref={canvasRef} className="graph-canvas graph-canvas-wide" />
+}
+
+function LearningGraph({ history }: { history: DashboardHistoryPoint[] }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = fitCanvas(canvas)
+    drawLearningSignals(ctx, canvas, history)
+  }, [history])
+  return <canvas ref={canvasRef} className="graph-canvas" />
+}
+
+function CapabilityGraph({ snapshot }: { snapshot: DashboardSnapshot | null }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = fitCanvas(canvas)
+    drawCapabilityMatrix(ctx, canvas, snapshot)
   }, [snapshot])
   return <canvas ref={canvasRef} className="graph-canvas" />
 }
@@ -777,6 +905,203 @@ function drawActionGraph(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElemen
   }
 }
 
+function drawCraftingTree(
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  snapshot: DashboardSnapshot | null,
+  unlocks: Record<string, CraftUnlock>
+) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.fillStyle = '#000407'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  drawGrid(ctx, canvas.width, canvas.height, 'rgba(0, 229, 255, 0.16)')
+
+  const observations = craftObservations(snapshot)
+  const completed = new Set<string>()
+  for (const node of CRAFTING_TREE) {
+    if (observations.get(node.id)?.seen || unlocks[node.id]) completed.add(node.id)
+  }
+  const nextTargets = CRAFTING_TREE
+    .filter((node) => !completed.has(node.id) && node.deps.every((dep) => completed.has(dep)))
+    .map((node) => node.id)
+  const progress = completed.size / Math.max(1, CRAFTING_TREE.length)
+  const maxTier = Math.max(...CRAFTING_TREE.map((node) => node.tier))
+  const left = 30 * dpr()
+  const right = canvas.width - 26 * dpr()
+  const top = 58 * dpr()
+  const bottom = canvas.height - 34 * dpr()
+  const laneHeight = (bottom - top) / 2
+  const nodeW = Math.min(98 * dpr(), ((right - left) / Math.max(1, maxTier)) * 0.76)
+  const nodeH = 28 * dpr()
+  const position = (node: CraftNode) => ({
+    x: left + (node.tier / Math.max(1, maxTier)) * (right - left),
+    y: top + node.lane * laneHeight
+  })
+
+  ctx.font = `${10 * dpr()}px system-ui, sans-serif`
+  ctx.fillStyle = '#00e5ff'
+  ctx.fillText('recipe unlock path', 12 * dpr(), 20 * dpr())
+  ctx.fillStyle = '#d6fbff'
+  ctx.fillText(`${Math.round(progress * 100)}%`, canvas.width - 58 * dpr(), 20 * dpr())
+  ctx.fillStyle = nextTargets.length ? '#f8ff6a' : '#00ffa3'
+  ctx.fillText(
+    nextTargets.length ? `next: ${nextTargets.map((id) => CRAFTING_TREE.find((node) => node.id === id)?.label).join(', ')}` : 'goal path complete',
+    12 * dpr(),
+    40 * dpr()
+  )
+
+  for (const node of CRAFTING_TREE) {
+    const to = position(node)
+    for (const depId of node.deps) {
+      const dep = CRAFTING_TREE.find((item) => item.id === depId)
+      if (!dep) continue
+      const from = position(dep)
+      const lit = completed.has(dep.id) && (completed.has(node.id) || nextTargets.includes(node.id))
+      ctx.strokeStyle = lit ? 'rgba(0, 255, 163, 0.82)' : 'rgba(0, 229, 255, 0.22)'
+      ctx.lineWidth = lit ? 2 * dpr() : 1 * dpr()
+      ctx.setLineDash(lit ? [] : [5 * dpr(), 5 * dpr()])
+      ctx.beginPath()
+      ctx.moveTo(from.x + nodeW / 2, from.y)
+      ctx.lineTo(to.x - nodeW / 2, to.y)
+      ctx.stroke()
+    }
+  }
+  ctx.setLineDash([])
+
+  for (const node of CRAFTING_TREE) {
+    const point = position(node)
+    const observed = observations.get(node.id)
+    const done = completed.has(node.id)
+    const next = nextTargets.includes(node.id)
+    const active = observed?.active
+    const x = point.x - nodeW / 2
+    const y = point.y - nodeH / 2
+    ctx.fillStyle = done ? 'rgba(0, 255, 163, 0.28)' : next ? 'rgba(248, 255, 106, 0.2)' : 'rgba(0, 12, 16, 0.82)'
+    ctx.strokeStyle = active ? '#ff2bd6' : done ? '#00ffa3' : next ? '#f8ff6a' : 'rgba(0, 229, 255, 0.34)'
+    ctx.lineWidth = (active ? 2.5 : 1.5) * dpr()
+    ctx.fillRect(x, y, nodeW, nodeH)
+    ctx.strokeRect(x, y, nodeW, nodeH)
+    ctx.fillStyle = done ? '#eaffff' : next ? '#f8ff6a' : '#79f8ff'
+    ctx.font = `${8.5 * dpr()}px system-ui, sans-serif`
+    ctx.fillText(node.label, x + 6 * dpr(), y + 12 * dpr())
+    ctx.fillStyle = done ? '#00ffa3' : '#00e5ff'
+    ctx.font = `${7 * dpr()}px system-ui, sans-serif`
+    const count = Math.max(observed?.count ?? 0, unlocks[node.id]?.count ?? 0)
+    const agents = Math.max(observed?.agents.length ?? 0, unlocks[node.id]?.agents.length ?? 0)
+    ctx.fillText(done ? `${count || 1} item | ${agents || 1} agent` : next ? 'ready' : 'locked', x + 6 * dpr(), y + 23 * dpr())
+  }
+}
+
+function drawLearningSignals(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, history: DashboardHistoryPoint[]) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.fillStyle = '#000407'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  drawGrid(ctx, canvas.width, canvas.height, 'rgba(0, 229, 255, 0.16)')
+  const points = history.slice(-160)
+  const series = [
+    { label: 'craft tree', color: '#00e5ff', values: points.map((point) => point.craftProgress * 100) },
+    { label: 'success', color: '#00ffa3', values: points.map((point) => point.successRate * 100) },
+    { label: 'diversity', color: '#f8ff6a', values: points.map((point) => point.actionDiversity * 100) },
+    { label: 'speed', color: '#ff2bd6', values: points.map((point) => Math.max(0, 100 - (point.meanDurationMs / 3500) * 100)) }
+  ]
+  ctx.fillStyle = '#00e5ff'
+  ctx.font = `${12 * dpr()}px system-ui, sans-serif`
+  ctx.fillText('learning proxy: unlocks + successful behavior + tool diversity', 12 * dpr(), 20 * dpr())
+  if (points.length < 2) {
+    centerText(ctx, canvas.width, canvas.height, 'waiting for telemetry history', '#00e5ff')
+    return
+  }
+
+  const left = 32 * dpr()
+  const right = canvas.width - 18 * dpr()
+  const top = 42 * dpr()
+  const bottom = canvas.height - 28 * dpr()
+  ctx.strokeStyle = 'rgba(214, 251, 255, 0.3)'
+  ctx.lineWidth = 1 * dpr()
+  ctx.beginPath()
+  ctx.moveTo(left, top)
+  ctx.lineTo(left, bottom)
+  ctx.lineTo(right, bottom)
+  ctx.stroke()
+
+  for (const item of series) {
+    ctx.strokeStyle = item.color
+    ctx.lineWidth = 2 * dpr()
+    ctx.beginPath()
+    for (const [i, value] of item.values.entries()) {
+      const x = left + (i / Math.max(1, item.values.length - 1)) * (right - left)
+      const y = bottom - (Math.max(0, Math.min(100, value)) / 100) * (bottom - top)
+      if (i === 0) ctx.moveTo(x, y)
+      else ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+  }
+
+  const legendY = canvas.height - 10 * dpr()
+  let legendX = 12 * dpr()
+  ctx.font = `${9 * dpr()}px system-ui, sans-serif`
+  for (const item of series) {
+    const last = item.values[item.values.length - 1] ?? 0
+    ctx.fillStyle = item.color
+    ctx.fillRect(legendX, legendY - 8 * dpr(), 7 * dpr(), 7 * dpr())
+    ctx.fillStyle = '#d6fbff'
+    const label = `${item.label} ${Math.round(last)}`
+    ctx.fillText(label, legendX + 11 * dpr(), legendY)
+    legendX += Math.min(128 * dpr(), ctx.measureText(label).width + 26 * dpr())
+  }
+}
+
+function drawCapabilityMatrix(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, snapshot: DashboardSnapshot | null) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.fillStyle = '#000407'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  drawGrid(ctx, canvas.width, canvas.height, 'rgba(0, 229, 255, 0.16)')
+  if (!snapshot) {
+    centerText(ctx, canvas.width, canvas.height, 'waiting for agent capabilities', '#00e5ff')
+    return
+  }
+  const inventories = observedInventoriesByAgent(snapshot)
+  const agents = snapshot.agents.slice(0, 32)
+  const nodes = CRAFTING_TREE
+  const left = 64 * dpr()
+  const top = 34 * dpr()
+  const right = canvas.width - 14 * dpr()
+  const bottom = canvas.height - 18 * dpr()
+  const cellW = (right - left) / nodes.length
+  const rowH = Math.max(4 * dpr(), Math.min(12 * dpr(), (bottom - top) / Math.max(1, agents.length)))
+
+  ctx.fillStyle = '#00e5ff'
+  ctx.font = `${11 * dpr()}px system-ui, sans-serif`
+  ctx.fillText('agent capability unlocks', 12 * dpr(), 20 * dpr())
+  ctx.font = `${7 * dpr()}px system-ui, sans-serif`
+  for (const [i, node] of nodes.entries()) {
+    ctx.fillStyle = i % 2 ? '#79f8ff' : '#d6fbff'
+    ctx.fillText(shortCraftLabel(node), left + i * cellW + 2 * dpr(), top - 8 * dpr())
+  }
+
+  for (const [row, agent] of agents.entries()) {
+    const y = top + row * rowH
+    const inventory = inventories.get(agent.name) ?? {}
+    const level = nodes.filter((node) => itemCountForAliases(inventory, node.aliases) > 0).length
+    ctx.fillStyle = row % 2 ? 'rgba(0, 229, 255, 0.05)' : 'rgba(0, 255, 163, 0.035)'
+    ctx.fillRect(0, y, canvas.width, rowH)
+    ctx.fillStyle = agent.ready ? '#d6fbff' : '#37616a'
+    ctx.font = `${7 * dpr()}px system-ui, sans-serif`
+    ctx.fillText(agent.name.replace('agent_', 'a'), 12 * dpr(), y + rowH * 0.72)
+    for (const [col, node] of nodes.entries()) {
+      const count = itemCountForAliases(inventory, node.aliases)
+      const x = left + col * cellW
+      const complete = count > 0
+      ctx.fillStyle = complete ? capabilityColor(col, level / nodes.length) : 'rgba(0, 229, 255, 0.08)'
+      ctx.fillRect(x + 1 * dpr(), y + 1 * dpr(), Math.max(1, cellW - 2 * dpr()), Math.max(1, rowH - 2 * dpr()))
+      if (complete && rowH > 7 * dpr()) {
+        ctx.fillStyle = '#001014'
+        ctx.fillText(String(Math.min(99, count)), x + 3 * dpr(), y + rowH * 0.72)
+      }
+    }
+  }
+}
+
 function drawGrid(ctx: CanvasRenderingContext2D, width: number, height: number, color: string) {
   ctx.strokeStyle = color
   ctx.lineWidth = 1
@@ -846,8 +1171,8 @@ function minAgentDistance(snapshot: DashboardSnapshot) {
 
 function inventoryValue(snapshot: DashboardSnapshot) {
   let total = 0
-  for (const agent of snapshot.agents ?? []) {
-    for (const [name, count] of Object.entries(agent.inventory ?? {})) {
+  for (const inventory of observedInventoriesByAgent(snapshot).values()) {
+    for (const [name, count] of Object.entries(inventory)) {
       if (name.includes('log')) total += count
       else if (name.includes('planks')) total += count * 0.25
       else if (name.includes('pickaxe')) total += count * 4
@@ -857,6 +1182,167 @@ function inventoryValue(snapshot: DashboardSnapshot) {
     }
   }
   return total
+}
+
+function learningMetrics(snapshot: DashboardSnapshot) {
+  const events = (snapshot.activity ?? []).filter((event) => typeof event.success === 'boolean')
+  const recent = events.slice(-48)
+  const successes = recent.filter((event) => event.success).length
+  const successRate = recent.length ? successes / recent.length : 0
+  const tools = new Set(recent.map((event) => event.tool).filter(Boolean))
+  const actionDiversity = Math.min(1, tools.size / 8)
+  const durations = recent.map((event) => Number(event.duration_ms)).filter((value) => Number.isFinite(value))
+  const meanDurationMs = durations.length ? durations.reduce((sum, value) => sum + value, 0) / durations.length : 0
+  const craftProgress = craftProgressFromObservations(craftObservations(snapshot))
+  return { craftProgress, successRate, actionDiversity, meanDurationMs }
+}
+
+function mergeCraftUnlocks(previous: Record<string, CraftUnlock>, snapshot: DashboardSnapshot) {
+  const observations = craftObservations(snapshot)
+  let changed = false
+  const next: Record<string, CraftUnlock> = { ...previous }
+  for (const node of CRAFTING_TREE) {
+    const observation = observations.get(node.id)
+    if (!observation?.seen) continue
+    const existing = next[node.id]
+    const agents = Array.from(new Set([...(existing?.agents ?? []), ...observation.agents])).sort()
+    next[node.id] = {
+      firstSeenAt: existing?.firstSeenAt ?? snapshot.ts,
+      lastSeenAt: snapshot.ts,
+      count: Math.max(existing?.count ?? 0, observation.count),
+      agents
+    }
+    changed = true
+  }
+  return changed ? next : previous
+}
+
+function craftProgressFromObservations(observations: Map<string, CraftObservation>) {
+  const seen = CRAFTING_TREE.filter((node) => observations.get(node.id)?.seen).length
+  return seen / Math.max(1, CRAFTING_TREE.length)
+}
+
+function craftObservations(snapshot: DashboardSnapshot | null) {
+  const observations = new Map<string, CraftObservation>()
+  for (const node of CRAFTING_TREE) {
+    observations.set(node.id, { seen: false, active: false, count: 0, agents: [] })
+  }
+  if (!snapshot) return observations
+
+  const inventories = observedInventoriesByAgent(snapshot)
+  for (const [agentName, inventory] of inventories) {
+    for (const node of CRAFTING_TREE) {
+      const count = itemCountForAliases(inventory, node.aliases)
+      if (count <= 0) continue
+      const observation = observations.get(node.id)
+      if (!observation) continue
+      observation.seen = true
+      observation.count += count
+      if (!observation.agents.includes(agentName)) observation.agents.push(agentName)
+    }
+  }
+
+  for (const agent of snapshot.agents ?? []) {
+    const activeText = activeTaskText(agent)
+    if (!activeText) continue
+    for (const node of CRAFTING_TREE) {
+      if (!node.aliases.some((alias) => activeText.includes(alias))) continue
+      const observation = observations.get(node.id)
+      if (observation) observation.active = true
+    }
+  }
+
+  return observations
+}
+
+function observedInventoriesByAgent(snapshot: DashboardSnapshot) {
+  const inventories = new Map<string, Record<string, number>>()
+  for (const agent of snapshot.agents ?? []) {
+    inventories.set(agent.name, normalizeInventory(agent.inventory))
+  }
+
+  for (const event of snapshot.activity ?? []) {
+    if (!event.bot) continue
+    const existing = inventories.get(event.bot) ?? {}
+    const result = event.result ?? {}
+    const inventory = normalizeInventory(result.inventory)
+    const crafted = normalizeInventory(result.crafted)
+    const collected = normalizeInventory(result.collected)
+    const next = { ...existing }
+    mergeInventoryMax(next, inventory)
+    mergeInventoryMax(next, crafted)
+    mergeInventoryMax(next, collected)
+    if (typeof event.item === 'string') next[event.item] = Math.max(next[event.item] ?? 0, 1)
+    if (typeof event.block === 'string') next[event.block] = Math.max(next[event.block] ?? 0, 1)
+    inventories.set(event.bot, next)
+  }
+
+  return inventories
+}
+
+function normalizeInventory(value: unknown) {
+  const inventory: Record<string, number> = {}
+  if (!isRecord(value)) return inventory
+  for (const [name, rawCount] of Object.entries(value)) {
+    const count = Number(rawCount)
+    if (!Number.isFinite(count) || count <= 0) continue
+    inventory[name] = Math.max(inventory[name] ?? 0, count)
+  }
+  return inventory
+}
+
+function mergeInventoryMax(target: Record<string, number>, source: Record<string, number>) {
+  for (const [name, count] of Object.entries(source)) {
+    target[name] = Math.max(target[name] ?? 0, count)
+  }
+}
+
+function itemCountForAliases(inventory: Record<string, number>, aliases: string[]) {
+  let count = 0
+  for (const [name, value] of Object.entries(inventory)) {
+    if (aliases.some((alias) => itemMatchesAlias(name, alias))) count += value
+  }
+  return count
+}
+
+function itemMatchesAlias(name: string, alias: string) {
+  const normalized = name.toLowerCase()
+  const target = alias.toLowerCase()
+  if (target === 'log') return normalized === 'log' || normalized.endsWith('_log')
+  if (target === 'planks') return normalized === 'planks' || normalized.endsWith('_planks')
+  return normalized === target
+}
+
+function activeTaskText(agent: AgentState) {
+  if (!agent.active) return ''
+  return `${agent.active.tool} ${JSON.stringify(agent.active.payload ?? {})}`.toLowerCase()
+}
+
+function shortCraftLabel(node: CraftNode) {
+  const labels: Record<string, string> = {
+    logs: 'log',
+    planks: 'plk',
+    table: 'tbl',
+    sticks: 'stk',
+    wood_pick: 'wp',
+    cobble: 'cob',
+    stone_pick: 'sp',
+    furnace: 'fur',
+    coal: 'col',
+    raw_iron: 'ore',
+    iron_ingot: 'ing',
+    iron_pick: 'ip',
+    diamond: 'dia'
+  }
+  return labels[node.id] ?? node.id.slice(0, 3)
+}
+
+function capabilityColor(index: number, level: number) {
+  if (level > 0.72) return '#00ffa3'
+  if (index % 4 === 0) return '#00e5ff'
+  if (index % 4 === 1) return '#00ffa3'
+  if (index % 4 === 2) return '#f8ff6a'
+  return '#ff2bd6'
 }
 
 function summarizeResult(result: ActivityEvent['result']) {
@@ -928,15 +1414,29 @@ function resolveBridgeEndpoints() {
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const bridgeHost = formatHostForUrl(host)
   const bridgeHttp = window.location.origin
-  const bridgeWsHost = `${bridgeHost}:8780`
+  const directBridgeWs = shouldUseDirectPorts(host) ? `${protocol}://${bridgeHost}:8780/stream` : null
   return {
     http: BRIDGE_HTTP_ENV || bridgeHttp,
-    ws: BRIDGE_WS_ENV || `${protocol}://${bridgeWsHost}/stream`
+    ws: BRIDGE_WS_ENV || directBridgeWs
   }
 }
 
 function formatHostForUrl(host: string) {
   return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+}
+
+function shouldUseDirectPorts(host: string) {
+  const port = typeof window === 'undefined' ? '' : window.location.port
+  const normalized = host.toLowerCase()
+  return (
+    port === '8790' ||
+    normalized === 'localhost' ||
+    normalized === '127.0.0.1' ||
+    normalized === '0.0.0.0' ||
+    /^10\.\d+\.\d+\.\d+$/.test(normalized) ||
+    /^100\.\d+\.\d+\.\d+$/.test(normalized) ||
+    /^192\.168\.\d+\.\d+$/.test(normalized)
+  )
 }
 
 function readWebglLimit() {
@@ -948,11 +1448,14 @@ function readWebglLimit() {
 }
 
 function viewerHref(host: string, port: number, path = '/') {
-  const normalizedPath = path || '/'
+  const normalizedPath = (path || '/').startsWith('/') ? path || '/' : `/${path}`
   const params = new URLSearchParams()
   if (VIEWER_IFRAME_FPS > 0) params.set('fps', String(VIEWER_IFRAME_FPS))
   if (VIEWER_IFRAME_DPR > 0) params.set('dpr', String(VIEWER_IFRAME_DPR))
   const query = params.toString()
   const separator = normalizedPath.includes('?') ? '&' : '?'
+  if (!shouldUseDirectPorts(host)) {
+    return `/viewer/${port}${normalizedPath}${query ? `${separator}${query}` : ''}`
+  }
   return `http://${formatHostForUrl(host || 'localhost')}:${port}${normalizedPath}${query ? `${separator}${query}` : ''}`
 }
