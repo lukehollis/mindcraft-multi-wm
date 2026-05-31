@@ -11,3 +11,9 @@ runs/
 *.pt
 *.pth
 *.ckpt
+node_modules/
+.next/
+dashboard/node_modules/
+dashboard/.next/
+dashboard/out/
+dashboard/tsconfig.tsbuildinfo
