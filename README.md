@@ -12,6 +12,9 @@ https://github.com/user-attachments/assets/1a893b56-da7c-4ae2-8af9-9d4bd36efe4d
   <a href="http://mindcraft.fyi/">
     <img alt="Live demo" src="https://img.shields.io/badge/Live%20Demo-mindcraft.fyi-22c55e?style=for-the-badge&logo=vercel&logoColor=white">
   </a>
+  <a href="https://github.com/lukehollis/mindcraft-multi-wm/blob/main/mindcraft_hackathon_final_report.pdf">
+    <img alt="Slides" src="https://img.shields.io/badge/Slides-Final%20Report-ef4444?style=for-the-badge&logo=adobeacrobatreader&logoColor=white">
+  </a>
 </p>
 
 Continuous learning agents inside Minecraft based on [Andrej Karpathy’s Animals v. Ghosts](https://karpathy.bearblog.dev/animals-vs-ghosts/).
