@@ -41,7 +41,11 @@ In the future this type of continual learning will be used in robotic systems su
 In the realworld, it will be important for robots like the Unitree Go2 Pro to have continous learning from their environment with a method like our small Mindcraft model. We used Isaac Sim and the Go2 Pro robot to implement our continuous learning model in a simulated environment.
 
 
-https://github.com/user-attachments/assets/4575ed03-c078-4bb6-91f3-bd0b2697e832
+
+https://github.com/user-attachments/assets/2f3b216f-e69b-4d0a-972c-71141a420b4b
+
+
+
 
 This is our real continual learning world model running on the Go2 in Isaac Lab.
 
