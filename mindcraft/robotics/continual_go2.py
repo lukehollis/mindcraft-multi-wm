@@ -42,6 +42,142 @@ ROBOTICS_SKILL_NAMES = tuple(ROBOTICS_SKILLS)
 ROBOTICS_ACTION_DIM = len(ROBOTICS_SKILL_NAMES)
 
 
+@dataclass(frozen=True, slots=True)
+class CooperativeGoalMetrics:
+    centroid: tuple[float, float]
+    goal_xy: tuple[float, float]
+    centroid_distance: float
+    slot_targets: list[tuple[float, float]]
+    slot_errors: list[float]
+    mean_slot_error: float
+    max_slot_error: float
+    achieved: bool
+
+    def to_jsonable(self) -> dict[str, Any]:
+        return {
+            "centroid": list(self.centroid),
+            "goal_xy": list(self.goal_xy),
+            "centroid_distance": self.centroid_distance,
+            "slot_targets": [list(target) for target in self.slot_targets],
+            "slot_errors": self.slot_errors,
+            "mean_slot_error": self.mean_slot_error,
+            "max_slot_error": self.max_slot_error,
+            "achieved": self.achieved,
+        }
+
+
+def centered_formation_offsets(num_agents: int, spacing: float = 1.25) -> np.ndarray:
+    """Return deterministic formation slots centered around a shared goal."""
+    if num_agents <= 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    columns = int(math.ceil(math.sqrt(num_agents)))
+    rows = int(math.ceil(num_agents / columns))
+    offsets: list[tuple[float, float]] = []
+    for index in range(num_agents):
+        row = index // columns
+        column = index % columns
+        x = (column - 0.5 * (columns - 1)) * spacing
+        y = (row - 0.5 * (rows - 1)) * spacing
+        offsets.append((x, y))
+    arr = np.asarray(offsets, dtype=np.float32)
+    return arr - arr.mean(axis=0, keepdims=True)
+
+
+def cooperative_goal_metrics(
+    root_xy: np.ndarray | list[list[float]],
+    goal_xy: np.ndarray | list[float],
+    slot_offsets: np.ndarray | list[list[float]],
+    *,
+    goal_radius: float = 0.35,
+    slot_tolerance: float = 0.55,
+) -> CooperativeGoalMetrics:
+    positions = np.asarray(root_xy, dtype=np.float32).reshape(-1, 2)
+    goal = np.asarray(goal_xy, dtype=np.float32).reshape(2)
+    offsets = np.asarray(slot_offsets, dtype=np.float32).reshape(-1, 2)
+    if offsets.shape[0] != positions.shape[0]:
+        offsets = centered_formation_offsets(positions.shape[0], spacing=slot_tolerance * 2.0)
+    targets = goal[None, :] + offsets
+    centroid = positions.mean(axis=0) if positions.size else np.zeros(2, dtype=np.float32)
+    slot_errors_arr = np.linalg.norm(positions - targets, axis=1) if positions.size else np.zeros(0, dtype=np.float32)
+    centroid_distance = float(np.linalg.norm(centroid - goal))
+    mean_slot_error = float(slot_errors_arr.mean()) if slot_errors_arr.size else 0.0
+    max_slot_error = float(slot_errors_arr.max()) if slot_errors_arr.size else 0.0
+    achieved = bool(centroid_distance <= goal_radius and mean_slot_error <= slot_tolerance)
+    return CooperativeGoalMetrics(
+        centroid=(float(centroid[0]), float(centroid[1])),
+        goal_xy=(float(goal[0]), float(goal[1])),
+        centroid_distance=centroid_distance,
+        slot_targets=[(float(target[0]), float(target[1])) for target in targets],
+        slot_errors=[float(error) for error in slot_errors_arr],
+        mean_slot_error=mean_slot_error,
+        max_slot_error=max_slot_error,
+        achieved=achieved,
+    )
+
+
+def body_velocity_to_world_xy(command: tuple[float, float, float], yaw_rad: float) -> np.ndarray:
+    vx, vy, _wz = command
+    cos_yaw = math.cos(float(yaw_rad))
+    sin_yaw = math.sin(float(yaw_rad))
+    return np.asarray([cos_yaw * vx - sin_yaw * vy, sin_yaw * vx + cos_yaw * vy], dtype=np.float32)
+
+
+def cooperative_skill_score(
+    env_id: int,
+    skill: str,
+    root_xy: np.ndarray | list[list[float]],
+    root_yaw: np.ndarray | list[float],
+    goal_xy: np.ndarray | list[float],
+    slot_offsets: np.ndarray | list[list[float]],
+    *,
+    skill_horizon_s: float,
+    goal_radius: float = 0.35,
+    slot_tolerance: float = 0.55,
+    centroid_weight: float = 1.25,
+    slot_weight: float = 1.0,
+) -> dict[str, float]:
+    positions = np.asarray(root_xy, dtype=np.float32).reshape(-1, 2)
+    yaws = np.asarray(root_yaw, dtype=np.float32).reshape(-1)
+    before = cooperative_goal_metrics(
+        positions,
+        goal_xy,
+        slot_offsets,
+        goal_radius=goal_radius,
+        slot_tolerance=slot_tolerance,
+    )
+    predicted = positions.copy()
+    if 0 <= env_id < predicted.shape[0] and skill in ROBOTICS_SKILLS:
+        yaw = float(yaws[env_id]) if env_id < yaws.shape[0] else 0.0
+        predicted[env_id] += body_velocity_to_world_xy(ROBOTICS_SKILLS[skill].command, yaw) * float(skill_horizon_s)
+    after = cooperative_goal_metrics(
+        predicted,
+        goal_xy,
+        slot_offsets,
+        goal_radius=goal_radius,
+        slot_tolerance=slot_tolerance,
+    )
+    slot_before = before.slot_errors[env_id] if env_id < len(before.slot_errors) else before.mean_slot_error
+    slot_after = after.slot_errors[env_id] if env_id < len(after.slot_errors) else after.mean_slot_error
+    centroid_progress = before.centroid_distance - after.centroid_distance
+    formation_progress = before.mean_slot_error - after.mean_slot_error
+    slot_progress = slot_before - slot_after
+    achievement_bonus = 1.0 if after.achieved and not before.achieved else 0.0
+    score = (
+        float(centroid_weight) * centroid_progress
+        + float(slot_weight) * (0.5 * formation_progress + slot_progress)
+        + achievement_bonus
+    )
+    return {
+        "score": float(score),
+        "centroid_progress": float(centroid_progress),
+        "formation_progress": float(formation_progress),
+        "slot_progress": float(slot_progress),
+        "predicted_centroid_distance": after.centroid_distance,
+        "predicted_mean_slot_error": after.mean_slot_error,
+        "achievement_bonus": achievement_bonus,
+    }
+
+
 @dataclass(slots=True)
 class RoboticsTransition:
     episode: int

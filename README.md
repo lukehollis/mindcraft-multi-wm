@@ -120,8 +120,11 @@ PYTHONPATH=$PWD /home/trantor/Research/computational_robotics/IsaacLab/isaaclab.
   --num_envs 4
 ```
 
-Use `--video` to record an mp4 rollout. Local demo outputs were migrated under
-`runs/isaac_go2_video` and `runs/isaac_go2_video_policy`.
+Use `--video` to record an mp4 rollout, and `--cooperative-goal` to coordinate vectorized Go2 agents toward a shared formation target. Local demo outputs were migrated under
+`runs/isaac_go2_video`, `runs/isaac_go2_video_policy`,
+`runs/isaac_go2_video_policy_10s`, and `runs/isaac_go2_multiagent_10s`.
+The latest demo also writes `go2_multiagent_orchestration.jsonl` for shared
+multi-agent skill selection traces.
 
 See `docs/isaac_go2_continual_demo.md` for the full run options and outputs.
 
