@@ -7,13 +7,13 @@ https://github.com/user-attachments/assets/1a893b56-da7c-4ae2-8af9-9d4bd36efe4d
 
 <p align="left">
   <a href="https://github.com/lukehollis/mindcraft-multi-wm">
-    <img alt="GitHub repository" src="https://img.shields.io/badge/Code-GitHub-181717?style=for-the-badge&logo=github&logoColor=white">
+    <img alt="Code" src="https://img.shields.io/badge/Code-181717?style=for-the-badge&logo=github&logoColor=white">
   </a>
   <a href="http://mindcraft.fyi/">
-    <img alt="Live demo" src="https://img.shields.io/badge/Live%20Demo-mindcraft.fyi-22c55e?style=for-the-badge&logo=vercel&logoColor=white">
+    <img alt="Demo" src="https://img.shields.io/badge/Demo-181717?style=for-the-badge&logo=vercel&logoColor=white">
   </a>
   <a href="https://github.com/lukehollis/mindcraft-multi-wm/blob/main/mindcraft_hackathon_final_report.pdf">
-    <img alt="Slides" src="https://img.shields.io/badge/Slides-Final%20Report-ef4444?style=for-the-badge&logo=adobeacrobatreader&logoColor=white">
+    <img alt="Slides" src="https://img.shields.io/badge/Slides-181717?style=for-the-badge&logo=googleslides&logoColor=white">
   </a>
 </p>
 
@@ -69,14 +69,6 @@ Many robotic systems will need to coordinate to achieve tasks in the same way ou
 - `scripts/isaac_go2_continual_demo.py`: Isaac Lab demo that trains the robotics world model online.
 - `dashboard/`: live Next.js dashboard for agent feeds, world camera, society map, activity, and learning/progress graphs.
 - `figures/`: local presentation and architecture assets.
-
-
-## W&B 
-
-We use W&B for tracking the continual learning while observing the environment. In production, this could easily be adapted to robotic systems for a diverse range of objectives.
-
-<img width="3004" height="2002" alt="wandb_logging" src="https://github.com/user-attachments/assets/22cd6da0-c3f4-448e-8b6f-447f9c45499f" />
-
 
 
 ## Setup

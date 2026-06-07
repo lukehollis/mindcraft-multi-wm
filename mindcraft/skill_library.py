@@ -22,6 +22,7 @@ SKILL_ALIASES = {
     "scout_area": "explore_area",
 }
 RECOVERY_SKILLS = {"escape_water", "find_crafting_spot", "unstuck_reposition", "move_to_teammate"}
+COMBAT_SKILLS = {"duel_teammate"}
 
 
 @dataclass(slots=True)
@@ -57,6 +58,8 @@ class SkillLibrary:
     def candidates(self, agent_id: str, goal: str, observation: Observation) -> list[str]:
         names = []
         for name, skill in SKILLS.items():
+            if name in COMBAT_SKILLS and goal not in {"stone", "iron", "diamond", "culture", "combat"}:
+                continue
             if goal not in skill.goal_tags and not set(skill.goal_tags).intersection(_goal_family(goal)):
                 continue
             if self._preconditions_ok(name, observation):
@@ -67,6 +70,7 @@ class SkillLibrary:
                 for name in SKILLS
                 if name not in RECOVERY_SKILLS
                 and (name != "share_supplies" or goal in {"diamond", "culture"})
+                and (name not in COMBAT_SKILLS or goal in {"stone", "iron", "diamond", "culture", "combat"})
                 and self._preconditions_ok(name, observation)
             ]
         return names or list(SKILLS)
@@ -253,10 +257,12 @@ class SkillLibrary:
             return 8.0
         if name == "craft_furnace" and inv.get("cobblestone", 0) >= 8 and inv.get("furnace", 0) == 0 and has_table_access(obs):
             return 18.0
-        if name == "smelt_iron" and inv.get("iron_ore", 0) > 0 and inv.get("furnace", 0) > 0:
+        if name == "smelt_iron" and _raw_or_ore_iron(inv) > 0 and inv.get("furnace", 0) > 0:
             return 28.0 if inv.get("iron_pickaxe", 0) == 0 else -20.0
         if name == "craft_iron_pickaxe" and inv.get("iron_ingot", 0) >= 3 and inv.get("stick", 0) >= 2:
             return 35.0
+        if name == "complete_iron_pickaxe" and inv.get("iron_ingot", 0) >= 3 and inv.get("iron_pickaxe", 0) == 0:
+            return 45.0
         if name == "forage_wood" and nearby_wood(obs):
             return 0.4 if logs + planks < 12 else -1.0
         if name == "mine_stone" and obs.nearby_blocks.get("stone", 0):
@@ -266,15 +272,23 @@ class SkillLibrary:
         if name == "mine_iron" and (obs.nearby_blocks.get("iron_ore", 0) or obs.nearby_blocks.get("deepslate_iron_ore", 0)):
             if inv.get("iron_pickaxe", 0) > 0:
                 return -20.0
-            return 9.0 if inv.get("iron_ore", 0) < 3 else -2.0
+            return 9.0 if _raw_or_ore_iron(inv) < 3 else -2.0
         if name == "mine_diamond" and (obs.nearby_blocks.get("diamond_ore", 0) or obs.nearby_blocks.get("deepslate_diamond_ore", 0)):
             return 100.0
         if name == "mine_diamond" and inv.get("iron_pickaxe", 0) > 0:
             return 12.0
         if name == "share_supplies":
-            if inv.get("stick", 0) >= 2 or inv.get("iron_ingot", 0) >= 3 or inv.get("iron_ore", 0) >= 3:
+            if inv.get("stick", 0) >= 2 or inv.get("iron_ingot", 0) >= 3 or _raw_or_ore_iron(inv) >= 3:
                 return 10.0
             return 1.0
+        if name == "duel_teammate":
+            nearby_players = obs.nearby_entities.get("player", 0)
+            if nearby_players <= 0:
+                return -10.0
+            carried_value = sum(count * _item_value(item) for item, count in inv.items())
+            if carried_value >= 50.0:
+                return -6.0
+            return 1.5 if carried_value <= 8.0 else 0.5
         if name == "escape_water":
             return 12.0 if water_pressure(obs) >= 48 else 3.0
         if name == "find_crafting_spot":
@@ -291,12 +305,38 @@ def _goal_family(goal: str) -> set[str]:
         "bootstrap": {"bootstrap", "wood", "tools", "explore"},
         "wood": {"bootstrap", "wood", "tools"},
         "tools": {"tools", "wood", "stone"},
-        "stone": {"stone", "tools", "iron"},
-        "iron": {"iron"},
-        "diamond": {"diamond", "iron", "explore"},
-        "culture": {"culture", "diamond"},
+        "stone": {"stone", "tools", "iron", "combat"},
+        "iron": {"iron", "combat"},
+        "diamond": {"diamond", "iron", "tools", "wood", "explore", "combat"},
+        "culture": {"culture", "diamond", "combat"},
+        "combat": {"combat", "culture"},
     }
     return families.get(goal, {goal})
+
+
+def _item_value(item: str) -> float:
+    if item.endswith("_log") or item.endswith("_stem"):
+        return 1.0
+    if item.endswith("_planks"):
+        return 0.25
+    return {
+        "stick": 0.15,
+        "crafting_table": 2.0,
+        "wooden_pickaxe": 4.0,
+        "cobblestone": 0.4,
+        "stone_pickaxe": 6.0,
+        "coal": 1.0,
+        "iron_ore": 8.0,
+        "raw_iron": 8.0,
+        "furnace": 3.0,
+        "iron_ingot": 10.0,
+        "iron_pickaxe": 16.0,
+        "diamond": 60.0,
+    }.get(item, 0.0)
+
+
+def _raw_or_ore_iron(inv: dict[str, int]) -> int:
+    return inv.get("iron_ore", 0) + inv.get("deepslate_iron_ore", 0) + inv.get("raw_iron", 0)
 
 
 def _canonical_skill(name: str) -> str:

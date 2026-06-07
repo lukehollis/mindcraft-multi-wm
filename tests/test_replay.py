@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import random
 
 from mindcraft.replay import ReplayBuffer
@@ -143,3 +144,23 @@ def test_replay_refresh_waits_for_partial_json_line(tmp_path: Path) -> None:
 
     assert len(reader) == 1
     assert reader.refresh() == 0
+
+
+def test_replay_normalizes_empty_combat_kill_rewards(tmp_path: Path) -> None:
+    path = tmp_path / "experience.jsonl"
+    transition = make_transition("agent_0", 0, skill="duel_teammate", success=True)
+    transition.result = SkillResult(
+        skill="duel_teammate",
+        success=True,
+        data={"killed": True, "target": "agent_1", "transferred": {}, "kill_reward": 35},
+    )
+    transition.reward = 35.0
+    with path.open("w", encoding="utf-8") as f:
+        f.write(json.dumps(transition.to_jsonable()) + "\n")
+
+    replay = ReplayBuffer(path, capacity=100)
+
+    loaded = replay.tail(1)[0]
+    assert loaded.reward == 2.0
+    assert loaded.result.data["empty_kill"]
+    assert loaded.result.data["kill_reward"] == 2.0

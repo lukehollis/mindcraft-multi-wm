@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import random
 from collections import defaultdict, deque
+from dataclasses import replace
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Iterable
 
-from mindcraft.schemas import Transition
+from mindcraft.schemas import SkillResult, Transition
 from mindcraft.progression import (
     frontier_items_for_stage,
     hindsight_relabels,
@@ -102,7 +103,7 @@ class ReplayBuffer:
                 if not line:
                     continue
                 try:
-                    self.items.append(Transition.from_jsonable(json.loads(line)))
+                    self.items.append(_normalize_loaded_transition(Transition.from_jsonable(json.loads(line))))
                 except JSONDecodeError:
                     self._offset = line_start
                     break
@@ -214,3 +215,26 @@ def _hindsight_windows(window: list[Transition]) -> list[list[Transition]]:
         return []
     relabels = hindsight_relabels(window[-1])
     return [list(window[:-1]) + [relabel] for relabel in relabels]
+
+
+def _normalize_loaded_transition(transition: Transition) -> Transition:
+    if transition.skill != "duel_teammate":
+        return transition
+    data = transition.result.data or {}
+    if not data.get("killed"):
+        return transition
+    transferred = data.get("transferred") or {}
+    if any(int(count) > 0 for count in transferred.values()):
+        return transition
+    normalized_data = {**data, "kill_reward": min(float(data.get("kill_reward", 2.0) or 2.0), 2.0), "empty_kill": True}
+    return replace(
+        transition,
+        reward=min(transition.reward, 2.0),
+        result=SkillResult(
+            skill=transition.result.skill,
+            success=transition.result.success,
+            message=transition.result.message,
+            data=normalized_data,
+            duration_s=transition.result.duration_s,
+        ),
+    )

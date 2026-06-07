@@ -2,6 +2,7 @@ from pathlib import Path
 import random
 
 from mindcraft.skill_library import SkillLibrary
+from mindcraft.progression import stage_for_observation
 from mindcraft.schemas import Observation
 
 
@@ -111,15 +112,37 @@ def test_share_supplies_requires_surplus_inventory(tmp_path: Path) -> None:
         bot="agent_1",
         inventory={"oak_log": 24},
         nearby_blocks={"stone": 12},
+        nearby_entities={"player": 1},
     )
 
     assert "share_supplies" not in lib.candidates("agent_0", "iron", low_value)
     assert "share_supplies" in lib.candidates("agent_1", "diamond", surplus)
 
 
+def test_stage_eight_supplier_completes_pickaxe_before_sharing(tmp_path: Path) -> None:
+    lib = SkillLibrary(tmp_path / "skills.json")
+    isolated = Observation(
+        bot="agent_0",
+        inventory={"iron_ingot": 3, "stone_pickaxe": 1},
+        nearby_blocks={"stone": 12},
+    )
+    nearby_player = Observation(
+        bot="agent_0",
+        inventory={"iron_ingot": 3, "stone_pickaxe": 1},
+        nearby_blocks={"stone": 12},
+        nearby_entities={"player": 1},
+    )
+
+    bonuses = lib.affordance_bonuses("agent_0", "diamond", nearby_player)
+
+    assert lib.curriculum_candidates("agent_0", "diamond", isolated)[0] == "complete_iron_pickaxe"
+    assert "share_supplies" not in lib.candidates("agent_0", "diamond", isolated)
+    assert bonuses["complete_iron_pickaxe"] > bonuses["share_supplies"]
+
+
 def test_skill_preferences_are_learned_per_agent(tmp_path: Path) -> None:
     lib = SkillLibrary(tmp_path / "skills.json")
-    obs = Observation(bot="agent_0", inventory={}, nearby_blocks={"stone": 4})
+    obs = Observation(bot="agent_0", inventory={}, nearby_blocks={"stone": 4, "oak_log": 2})
     lib.update("explore_area", reward=8.0, success=True, episode=0, step=1, agent_id="agent_0")
     lib.update("forage_wood", reward=8.0, success=True, episode=0, step=1, agent_id="agent_1")
 
@@ -155,6 +178,81 @@ def test_furnace_requires_crafting_table_access(tmp_path: Path) -> None:
 
     assert "craft_furnace" not in lib.candidates("agent_0", "iron", without_table)
     assert "craft_furnace" in lib.candidates("agent_0", "iron", with_table)
+
+
+def test_coal_is_frontier_skill_after_wooden_pickaxe(tmp_path: Path) -> None:
+    lib = SkillLibrary(tmp_path / "skills.json")
+    obs = Observation(
+        bot="agent_0",
+        inventory={"wooden_pickaxe": 1},
+        nearby_blocks={"coal_ore": 3, "stone": 12},
+    )
+
+    candidates = lib.candidates("agent_0", "stone", obs)
+    scores = lib.score_candidates("agent_0", "stone", obs, ucb_c=0.0, curiosity_weight=0.0)
+
+    assert "mine_coal" in candidates
+    assert scores["mine_coal"] > scores["mine_stone"]
+
+
+def test_iron_curriculum_explores_before_hidden_ore_pathing(tmp_path: Path) -> None:
+    lib = SkillLibrary(tmp_path / "skills.json")
+    hidden = Observation(
+        bot="agent_0",
+        inventory={"stone_pickaxe": 1, "furnace": 1},
+        nearby_blocks={"coal_ore": 3, "iron_ore": 2, "stone": 12},
+        line_of_sight="stone",
+    )
+    visible = Observation(
+        bot="agent_0",
+        inventory={"stone_pickaxe": 1, "furnace": 1},
+        nearby_blocks={"coal_ore": 3, "iron_ore": 2, "stone": 12},
+        line_of_sight="coal_ore",
+    )
+
+    assert lib.curriculum_candidates("agent_0", "iron", hidden)[0] == "explore_area"
+    assert lib.curriculum_candidates("agent_0", "iron", visible)[0] == "mine_coal"
+
+
+def test_raw_iron_counts_for_iron_progression_and_smelting(tmp_path: Path) -> None:
+    lib = SkillLibrary(tmp_path / "skills.json")
+    obs = Observation(
+        bot="agent_0",
+        inventory={"raw_iron": 1, "furnace": 1, "coal": 1},
+        nearby_blocks={"stone": 12},
+    )
+
+    assert stage_for_observation(obs).name == "iron_ore"
+    assert "smelt_iron" in lib.candidates("agent_0", "iron", obs)
+    assert lib.curriculum_candidates("agent_0", "iron", obs)[0] == "smelt_iron"
+
+
+def test_duel_teammate_is_available_near_players_after_bootstrap(tmp_path: Path) -> None:
+    lib = SkillLibrary(tmp_path / "skills.json")
+    obs = Observation(
+        bot="agent_0",
+        inventory={"wooden_pickaxe": 1},
+        nearby_blocks={"stone": 12},
+        nearby_entities={"player": 1},
+    )
+
+    candidates = lib.candidates("agent_0", "stone", obs)
+    scores = lib.score_candidates("agent_0", "stone", obs, ucb_c=0.0, curiosity_weight=0.0)
+
+    assert "duel_teammate" in candidates
+    assert scores["duel_teammate"] > 0
+
+
+def test_duel_teammate_does_not_interrupt_basic_tools_goal(tmp_path: Path) -> None:
+    lib = SkillLibrary(tmp_path / "skills.json")
+    obs = Observation(
+        bot="agent_0",
+        inventory={"oak_planks": 4, "stick": 2},
+        nearby_blocks={"crafting_table": 1},
+        nearby_entities={"player": 1},
+    )
+
+    assert "duel_teammate" not in lib.candidates("agent_0", "tools", obs)
 
 
 def test_curriculum_uses_shared_cobblestone_for_stone_pickaxe(tmp_path: Path) -> None:

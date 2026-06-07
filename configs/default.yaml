@@ -6,7 +6,7 @@ minecraft:
   bot_names:
     - agent_0
     - agent_1
-  action_timeout_s: 35
+  action_timeout_s: 90
 
 learning:
   seed: 7
@@ -56,5 +56,6 @@ run:
   storage_dir: runs/default
   episodes: 3
   steps_per_episode: 100
+  duration_s:
   bridge: live
   rally_point:

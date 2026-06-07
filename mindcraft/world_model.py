@@ -26,6 +26,7 @@ INVENTORY_KEYS = (
     "stone_pickaxe",
     "coal",
     "iron_ore",
+    "raw_iron",
     "furnace",
     "iron_ingot",
     "iron_pickaxe",

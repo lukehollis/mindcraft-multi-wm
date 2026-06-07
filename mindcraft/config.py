@@ -14,7 +14,7 @@ class MinecraftConfig:
     port: int = 25565
     version: str | None = None
     bot_names: list[str] = field(default_factory=lambda: ["agent_0", "agent_1"])
-    action_timeout_s: float = 35.0
+    action_timeout_s: float = 90.0
 
 
 @dataclass(slots=True)
@@ -70,6 +70,7 @@ class RunConfig:
     storage_dir: Path = Path("runs/default")
     episodes: int = 3
     steps_per_episode: int = 100
+    duration_s: float | None = None
     bridge: str = "live"
     rally_point: tuple[int, int, int] | None = None
 

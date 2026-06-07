@@ -25,6 +25,7 @@ SHARE_ITEM_PRIORITY = (
     "diamond",
     "iron_ingot",
     "iron_ore",
+    "raw_iron",
     "iron_pickaxe",
     "stone_pickaxe",
     "furnace",
@@ -39,6 +40,7 @@ SHARE_ITEM_PRIORITY = (
 SHARE_BATCH_SIZE = {
     "iron_ingot": 3,
     "iron_ore": 3,
+    "raw_iron": 3,
     "stick": 2,
     "cobblestone": 8,
 }
@@ -47,7 +49,7 @@ SHARE_BATCH_SIZE = {
 def shareable_transfer_count(item: str, count: int) -> int:
     if item == "diamond":
         return count
-    if item in {"iron_ingot", "iron_ore"}:
+    if item in {"iron_ingot", "iron_ore", "raw_iron"}:
         return count if count >= 3 else 0
     if item in {"iron_pickaxe", "stone_pickaxe", "furnace", "crafting_table", "wooden_pickaxe"}:
         return max(0, count - 1)
@@ -74,14 +76,14 @@ SKILLS: dict[str, Skill] = {
     "explore_area": Skill(
         "explore_area",
         "Explore locally to reveal nearby resources and improve the shared world map.",
-        ("explore", "bootstrap", "diamond"),
-        {"distance": 10},
+        ("explore", "bootstrap", "stone", "iron", "diamond"),
+        {"distance": 10, "seconds": 0.75},
     ),
     "forage_wood": Skill(
         "forage_wood",
         "Find and mine nearby tree logs.",
         ("bootstrap", "wood", "tools"),
-        {"blocks": list(WOOD_SOURCE_BLOCKS), "count": 4},
+        {"blocks": list(WOOD_SOURCE_BLOCKS), "count": 1},
     ),
     "craft_planks": Skill(
         "craft_planks",
@@ -117,7 +119,7 @@ SKILLS: dict[str, Skill] = {
         "mine_stone",
         "Mine stone into cobblestone.",
         ("stone", "tools"),
-        {"blocks": ["stone"], "count": 8},
+        {"blocks": ["stone"], "count": 1},
     ),
     "craft_stone_pickaxe": Skill(
         "craft_stone_pickaxe",
@@ -129,7 +131,7 @@ SKILLS: dict[str, Skill] = {
         "mine_iron",
         "Find and mine iron ore.",
         ("iron", "diamond"),
-        {"blocks": ["iron_ore", "deepslate_iron_ore"], "count": 3},
+        {"blocks": ["iron_ore", "deepslate_iron_ore"], "count": 1, "radius": 96},
     ),
     "craft_furnace": Skill(
         "craft_furnace",
@@ -141,13 +143,19 @@ SKILLS: dict[str, Skill] = {
         "smelt_iron",
         "Smelt iron ore into ingots.",
         ("iron", "diamond"),
-        {"item": "iron_ingot", "count": 3},
+        {"item": "iron_ingot", "count": 1},
     ),
     "craft_iron_pickaxe": Skill(
         "craft_iron_pickaxe",
         "Craft and equip an iron pickaxe.",
         ("diamond",),
         {"item": "iron_pickaxe", "count": 1},
+    ),
+    "complete_iron_pickaxe": Skill(
+        "complete_iron_pickaxe",
+        "Gather missing nearby wood/table resources and craft an iron pickaxe from held ingots.",
+        ("diamond",),
+        {"wood_radius": 96, "table_radius": 96},
     ),
     "mine_diamond": Skill(
         "mine_diamond",
@@ -160,6 +168,12 @@ SKILLS: dict[str, Skill] = {
         "Move near a teammate and share useful supplies.",
         ("culture", "diamond"),
         {"item": "oak_log", "count": 1},
+    ),
+    "duel_teammate": Skill(
+        "duel_teammate",
+        "Attack a nearby teammate twice, resolve a kill, and claim dropped inventory.",
+        ("combat", "culture", "stone", "iron", "diamond"),
+        {"hits": 2, "max_distance": 18},
     ),
     "escape_water": Skill(
         "escape_water",
@@ -189,6 +203,6 @@ SKILLS: dict[str, Skill] = {
         "mine_coal",
         "Mine coal ore for furnace fuel and torches.",
         ("stone", "iron"),
-        {"blocks": ["coal_ore", "deepslate_coal_ore"], "count": 4},
+        {"blocks": ["coal_ore", "deepslate_coal_ore"], "count": 1, "radius": 96},
     ),
 }
