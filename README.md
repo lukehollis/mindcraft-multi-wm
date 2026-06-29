@@ -1,6 +1,10 @@
 
 
-https://github.com/user-attachments/assets/1a893b56-da7c-4ae2-8af9-9d4bd36efe4d
+
+
+https://github.com/user-attachments/assets/e982b6b0-0655-472a-be9f-4b61b3f44956
+
+
 
 
 # Mindcraft: Continuous Self-Improving Agents with Collaborative Behaviors in Minecraft
