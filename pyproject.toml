@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mindcraft-multi-wm"
+version = "0.1.0"
+description = "Minimal Minecraft skill world model with replay training and MCTS planning."
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "pyyaml>=6.0",
+  "tensorboard>=2.16",
+  "torch>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+mindcraft = "mindcraft.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mindcraft*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
